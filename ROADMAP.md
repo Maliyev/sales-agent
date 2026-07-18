@@ -4,7 +4,7 @@
 - [x] Keep one conversation history in memory.
 - [ ] Add a system prompt and a small FAQ.
 - [x] Keep several conversations separate in memory.
-- [ ] Save conversations in SQLite.
+- [x] Save conversations in SQLite.
 - [ ] Parse price and stock from elen.az product pages.
 - [ ] Let the agent search products.
 - [ ] Add a website chat.
