@@ -15,6 +15,7 @@ from database import (
     save_exchange,
 )
 from gemini import get_model_reply
+from prompts import load_system_instruction
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
@@ -40,8 +41,12 @@ def main():
 
     try:
         initialize_database(DATABASE_PATH)
+        system_instruction = load_system_instruction()
     except DatabaseError as error:
         print(f"Database error: {error}")
+        return
+    except RuntimeError as error:
+        print(f"Prompt error: {error}")
         return
 
     print("Sales agent started. Type 'exit' to stop.")
@@ -103,7 +108,12 @@ def main():
             reply = send_message(
                 history,
                 user_text,
-                lambda messages: get_model_reply(messages, model, api_key),
+                lambda messages: get_model_reply(
+                    messages,
+                    model,
+                    api_key,
+                    system_instruction,
+                ),
             )
             save_exchange(DATABASE_PATH, session_id, user_text, reply)
         except requests.RequestException as error:

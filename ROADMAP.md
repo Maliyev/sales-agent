@@ -2,7 +2,7 @@
 
 - [x] Send one message to Gemini through the REST API.
 - [x] Keep one conversation history in memory.
-- [ ] Add a system prompt and a small FAQ.
+- [x] Add a system prompt and base store knowledge.
 - [x] Keep several conversations separate in memory.
 - [x] Save conversations in SQLite.
 - [x] Stop before an oversized history is sent to Gemini.

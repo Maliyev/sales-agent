@@ -6,15 +6,19 @@ CHARACTERS_PER_TOKEN = 3
 MAX_HISTORY_CHARACTERS = MAX_ESTIMATED_TOKENS * CHARACTERS_PER_TOKEN
 
 
-def get_model_reply(history, model, api_key, timeout=60):
+def get_model_reply(history, model, api_key, system_instruction, timeout=60):
     check_history_size(history)
+    check_system_instruction(system_instruction)
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {
         "x-goog-api-key": api_key,
         "Content-Type": "application/json",
     }
-    payload = {"contents": history}
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "contents": history,
+    }
 
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     response.raise_for_status()
@@ -57,3 +61,8 @@ def check_history_size(history):
             f"(about {estimated_tokens:,} tokens). The limit is 250,000 tokens. "
             "Start a new session or wait for conversation summaries to be added."
         )
+
+
+def check_system_instruction(system_instruction):
+    if not isinstance(system_instruction, str) or not system_instruction.strip():
+        raise RuntimeError("System instruction is missing or invalid.")

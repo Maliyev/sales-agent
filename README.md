@@ -9,6 +9,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - reads the API key and model name from `.env`;
 - keeps the database file out of Git.
 - stops before it sends an oversized history to Gemini.
+- reads its instructions and store knowledge from Markdown files.
 
 ## Setup
 
@@ -46,11 +47,15 @@ The project reads simple `KEY=value` lines from `.env` itself. It uses
 It uses a conservative character-based estimate and stops when a conversation
 is longer than roughly 250,000 tokens.
 
+The files in `prompts/` and `knowledge/store.md` are loaded when the program
+starts. Edit them to change the assistant's behavior, then restart the bot.
+
 ## Project layout
 
 - `src/main.py` runs the terminal chat.
 - `src/chat.py` adds messages to a conversation history.
 - `src/database.py` saves and loads session histories from SQLite.
+- `src/prompts.py` builds the system instruction from Markdown files.
 - `src/config.py` loads local settings from `.env`.
 - `src/gemini.py` makes the HTTP request to Gemini.
 - `tests/test_chat.py` checks chat history and session isolation with Python's

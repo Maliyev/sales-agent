@@ -1,10 +1,11 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from gemini import MAX_HISTORY_CHARACTERS, check_history_size
+from gemini import MAX_HISTORY_CHARACTERS, check_history_size, get_model_reply
 
 
 class GeminiHistoryTests(unittest.TestCase):
@@ -29,3 +30,19 @@ class GeminiHistoryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "invalid message format"):
             check_history_size(history)
+
+    def test_sends_system_instruction_separately_from_history(self):
+        response = Mock()
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Hi"}]}}]
+        }
+        history = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
+        with patch("gemini.requests.post", return_value=response) as post:
+            get_model_reply(history, "test-model", "test-key", "Be helpful.")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["contents"], history)
+        self.assertEqual(
+            payload["systemInstruction"]["parts"][0]["text"], "Be helpful."
+        )
