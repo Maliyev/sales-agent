@@ -8,6 +8,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - saves separate conversation histories in a local SQLite database;
 - reads the API key and model name from `.env`;
 - keeps the database file out of Git.
+- stops before it sends an oversized history to Gemini.
 
 ## Setup
 
@@ -42,6 +43,8 @@ this computer and is ignored by Git because it can contain customer messages.
 
 The project reads simple `KEY=value` lines from `.env` itself. It uses
 `requests` for the direct HTTP request to Gemini and does not use a Gemini SDK.
+It uses a conservative character-based estimate and stops when a conversation
+is longer than roughly 250,000 tokens.
 
 ## Project layout
 
