@@ -1,11 +1,23 @@
 import os
+from pathlib import Path
 
 import requests
 
 from chat import send_message
 from config import load_env_file
+from database import (
+    DatabaseError,
+    create_session,
+    initialize_database,
+    list_session_ids,
+    load_history,
+    reset_history,
+    save_exchange,
+)
 from gemini import get_model_reply
-from sessions import get_history, list_session_ids, reset_history
+
+
+DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
 
 
 def get_settings():
@@ -24,8 +36,13 @@ def get_settings():
 def main():
     load_env_file()
     api_key, model = get_settings()
-    sessions = {}
     session_id = "terminal:default"
+
+    try:
+        initialize_database(DATABASE_PATH)
+    except DatabaseError as error:
+        print(f"Database error: {error}")
+        return
 
     print("Sales agent started. Type 'exit' to stop.")
     print("Commands: /use <client>, /sessions, /reset")
@@ -43,12 +60,22 @@ def main():
                 continue
 
             session_id = f"terminal:{client_id}"
-            get_history(sessions, session_id)
+            try:
+                create_session(DATABASE_PATH, session_id)
+            except DatabaseError as error:
+                print(f"Database error: {error}")
+                continue
+
             print(f"Current session: {session_id}")
             continue
 
         if user_text == "/sessions":
-            session_ids = list_session_ids(sessions)
+            try:
+                session_ids = list_session_ids(DATABASE_PATH)
+            except DatabaseError as error:
+                print(f"Database error: {error}")
+                continue
+
             if not session_ids:
                 print("No sessions yet.")
                 continue
@@ -59,7 +86,12 @@ def main():
             continue
 
         if user_text == "/reset":
-            reset_history(sessions, session_id)
+            try:
+                reset_history(DATABASE_PATH, session_id)
+            except DatabaseError as error:
+                print(f"Database error: {error}")
+                continue
+
             print(f"History cleared for {session_id}.")
             continue
 
@@ -67,14 +99,18 @@ def main():
             continue
 
         try:
-            history = get_history(sessions, session_id)
+            history = load_history(DATABASE_PATH, session_id)
             reply = send_message(
                 history,
                 user_text,
                 lambda messages: get_model_reply(messages, model, api_key),
             )
+            save_exchange(DATABASE_PATH, session_id, user_text, reply)
         except requests.RequestException as error:
             print(f"Request failed: {error}")
+            continue
+        except DatabaseError as error:
+            print(f"Database error: {error}")
             continue
         except RuntimeError as error:
             print(f"Model error: {error}")

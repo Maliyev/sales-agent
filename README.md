@@ -5,9 +5,9 @@ A small terminal chat bot for the future elen.az sales assistant.
 ## First version
 
 - sends messages to Gemini through its REST API;
-- keeps several separate conversation histories while the program is running;
+- saves separate conversation histories in a local SQLite database;
 - reads the API key and model name from `.env`;
-- does not save conversation history yet.
+- keeps the database file out of Git.
 
 ## Setup
 
@@ -37,6 +37,9 @@ The part before `:` is the message channel. Later, the website chat can use a
 key such as `website:<visitor_id>` and WhatsApp can use `whatsapp:<number>`.
 They stay separate even when the part after `:` is the same.
 
+The database is created automatically as `data/sales_agent.db`. It is local to
+this computer and is ignored by Git because it can contain customer messages.
+
 The project reads simple `KEY=value` lines from `.env` itself. It uses
 `requests` for the direct HTTP request to Gemini and does not use a Gemini SDK.
 
@@ -44,7 +47,7 @@ The project reads simple `KEY=value` lines from `.env` itself. It uses
 
 - `src/main.py` runs the terminal chat.
 - `src/chat.py` adds messages to a conversation history.
-- `src/sessions.py` keeps histories separate by session ID.
+- `src/database.py` saves and loads session histories from SQLite.
 - `src/config.py` loads local settings from `.env`.
 - `src/gemini.py` makes the HTTP request to Gemini.
 - `tests/test_chat.py` checks chat history and session isolation with Python's
