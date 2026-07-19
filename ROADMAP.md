@@ -14,6 +14,7 @@
 - [ ] Add conversation context trimming and summaries.
 - [x] Answer several customer sessions concurrently.
 - [x] Add a simple Telegram demo with `/reset`.
+- [x] Block sessions that send more than 15 messages in one minute.
 - [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.
 - [ ] Add WhatsApp Cloud API.

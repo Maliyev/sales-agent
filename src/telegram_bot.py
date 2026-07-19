@@ -8,6 +8,7 @@ import requests
 from agent import AgentError
 from config import load_env_file
 from database import DatabaseError, initialize_database, reset_history, save_exchange
+from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
@@ -63,7 +64,7 @@ def split_message(text):
     ]
 
 
-def handle_update(update, submit_fn, reset_fn, send_fn):
+def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
     if not isinstance(update, dict):
         return
 
@@ -85,6 +86,9 @@ def handle_update(update, submit_fn, reset_fn, send_fn):
 
     text = text.strip()
     session_id = f"telegram:{chat_id}"
+    if allow_fn is not None and not allow_fn(session_id):
+        return
+
     command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
 
     if command == "/start":
@@ -211,7 +215,13 @@ def main():
         )
 
     def process_update(update):
-        handle_update(update, submit_message, clear_history, send_reply)
+        handle_update(
+            update,
+            submit_message,
+            clear_history,
+            send_reply,
+            lambda session_id: is_message_allowed(DATABASE_PATH, session_id),
+        )
 
     try:
         run_polling(telegram_token, process_update)
