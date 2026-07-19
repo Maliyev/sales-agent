@@ -3,7 +3,7 @@ from pathlib import Path
 
 import requests
 
-from chat import send_message
+from agent import AgentError, get_agent_reply
 from config import load_env_file
 from database import (
     DatabaseError,
@@ -14,8 +14,8 @@ from database import (
     reset_history,
     save_exchange,
 )
-from gemini import get_model_reply
-from prompts import load_system_instruction
+from product_search import ProductSearchError
+from prompts import load_prompt_file, load_system_instruction
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
@@ -42,6 +42,8 @@ def main():
     try:
         initialize_database(DATABASE_PATH)
         system_instruction = load_system_instruction()
+        selection_instruction = load_prompt_file("prompts/product_selection.md")
+        response_instruction = load_prompt_file("prompts/product_response.md")
     except DatabaseError as error:
         print(f"Database error: {error}")
         return
@@ -105,25 +107,27 @@ def main():
 
         try:
             history = load_history(DATABASE_PATH, session_id)
-            reply = send_message(
+            reply = get_agent_reply(
                 history,
                 user_text,
-                lambda messages: get_model_reply(
-                    messages,
-                    model,
-                    api_key,
-                    system_instruction,
-                ),
+                model,
+                api_key,
+                system_instruction,
+                selection_instruction,
+                response_instruction,
             )
             save_exchange(DATABASE_PATH, session_id, user_text, reply)
+        except ProductSearchError as error:
+            print(f"Product search error: {error}")
+            continue
         except requests.RequestException as error:
             print(f"Request failed: {error}")
             continue
         except DatabaseError as error:
             print(f"Database error: {error}")
             continue
-        except RuntimeError as error:
-            print(f"Model error: {error}")
+        except (AgentError, RuntimeError) as error:
+            print(f"Agent error: {error}")
             continue
 
         print(f"Agent: {reply}")

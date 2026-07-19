@@ -10,6 +10,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - keeps the database file out of Git.
 - stops before it sends an oversized history to Gemini.
 - reads its instructions and store knowledge from Markdown files.
+- searches elen.az and filters several relevant product candidates.
 
 ## Setup
 
@@ -50,13 +51,27 @@ is longer than roughly 250,000 tokens.
 The files in `prompts/` and `knowledge/store.md` are loaded when the program
 starts. Edit them to change the assistant's behavior, then restart the bot.
 
+When a customer asks about a product, the agent works in three short steps:
+
+1. Gemini decides whether a product search is needed.
+2. Search results receive temporary candidate IDs and Gemini keeps up to five
+   relevant products.
+3. Python loads current product details and Gemini writes the customer answer.
+
+The full search result and the temporary selection response are not added to
+the conversation history or SQLite. The final request contains only the chosen
+product data. Python checks every candidate ID before it opens a product URL.
+
 ## Project layout
 
 - `src/main.py` runs the terminal chat.
+- `src/agent.py` coordinates product search, selection, and the final answer.
 - `src/chat.py` adds messages to a conversation history.
 - `src/database.py` saves and loads session histories from SQLite.
 - `src/prompts.py` builds the system instruction from Markdown files.
 - `src/config.py` loads local settings from `.env`.
 - `src/gemini.py` makes the HTTP request to Gemini.
+- `src/product_search.py` reads product search result pages.
+- `src/product_parser.py` reads current product details and variants.
 - `tests/test_chat.py` checks chat history and session isolation with Python's
   built-in `unittest` module.

@@ -6,7 +6,10 @@
 - [x] Keep several conversations separate in memory.
 - [x] Save conversations in SQLite.
 - [x] Stop before an oversized history is sent to Gemini.
-- [ ] Parse price and stock from elen.az product pages.
-- [ ] Let the agent search products.
+- [x] Parse price and stock from elen.az product pages.
+- [x] Search products and let the agent filter relevant candidates.
+- [ ] Improve product choice and answer style using real conversations.
+- [ ] Add conversation context trimming and summaries.
+- [ ] Answer several customer sessions concurrently.
 - [ ] Add a website chat.
 - [ ] Add WhatsApp Cloud API.
