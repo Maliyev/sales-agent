@@ -7,6 +7,7 @@
 - [x] Save conversations in SQLite.
 - [x] Stop before an oversized history is sent to Gemini.
 - [x] Parse price and stock from elen.az product pages.
+- [x] Return compact details for radio and dropdown product variants.
 - [x] Search products and let the agent filter relevant candidates.
 - [ ] Improve product choice and answer style using real conversations.
 - [ ] Add conversation context trimming and summaries.

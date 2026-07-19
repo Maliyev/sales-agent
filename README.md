@@ -89,6 +89,12 @@ The full search result and the temporary selection response are not added to
 the conversation history or SQLite. The final request contains only the chosen
 product data. Python checks every candidate ID before it opens a product URL.
 
+Detailed product data stays compact. A product without selectable options has
+its price and stock at the top level. A configurable product has no top-level
+price or stock; instead, every radio or dropdown value is returned in
+`variants` with only its name, price, and stock quantity. Product descriptions
+are included as plain text, with table rows kept on separate lines.
+
 ## Project layout
 
 - `src/main.py` runs the terminal chat.

@@ -49,8 +49,29 @@ class ProductParserTests(unittest.TestCase):
                 "currency": "AZN",
                 "availability": "in_stock",
                 "stock_quantity": 62,
+                "description": None,
                 "url": "https://www.elen.az/shop/999/desc/led-3-mm",
             },
+        )
+
+    def test_parses_description_and_keeps_table_rows_separate(self):
+        html = """
+        <h1>Resistor</h1>
+        <div class="shop-info">
+            <p>Metal film resistor.</p>
+            <table>
+                <tr><td>Nominal</td><td>Pcs.</td></tr>
+                <tr><td>24kOm</td><td>40</td></tr>
+            </table>
+            <script>Do not include me</script>
+        </div>
+        """
+
+        product = parse_product_page(html, "https://www.elen.az/shop/936/desc/x")
+
+        self.assertEqual(
+            product["description"],
+            "Metal film resistor.\nNominal Pcs.\n24kOm 40",
         )
 
     def test_uses_new_price_when_old_price_is_present(self):
@@ -125,22 +146,114 @@ class ProductParserTests(unittest.TestCase):
             product["variants"],
             [
                 {
-                    "options": {"color": "white"},
+                    "name": "color: white",
                     "price": 0.2,
-                    "currency": "AZN",
-                    "availability": "in_stock",
                     "stock_quantity": 62,
                 },
                 {
-                    "options": {"color": "red"},
+                    "name": "color: red",
                     "price": 0.25,
-                    "currency": "AZN",
-                    "availability": "in_stock",
                     "stock_quantity": 51,
                 },
             ],
         )
+        self.assertEqual(product["currency"], "AZN")
+        self.assertNotIn("price", product)
+        self.assertNotIn("stock_quantity", product)
         self.assertEqual([data["opt"] for data in session.posted_data], ["10", "10-4"])
+
+    def test_downloads_every_dropdown_variant(self):
+        page_html = """
+        <h1>Resistor</h1>
+        <span class="id-good-936-price">0.09 AZN</span>
+        <span class="val stock">0</span>
+        <ul id="id-936-options-selectors">
+            <li id="id-936-oitem-9">
+                <span class="opt">Nominal:</span>
+                <select id="id-936-oval-9">
+                    <option value="72"><span class="opt-val-name">10</span></option>
+                    <option value="81"><span class="opt-val-name">24</span></option>
+                </select>
+            </li>
+        </ul>
+        """
+        option_responses = {
+            "9-72": "$('.id-good-936-price').html('0.09 AZN');$('#id-936-options .val.stock').text('0');",
+            "9-81": "$('.id-good-936-price').html('0.09 AZN');$('#id-936-options .val.stock').text('40');",
+        }
+        session = FakeSession(page_html, option_responses)
+
+        product = get_product_data(
+            "https://www.elen.az/shop/936/desc/resistor", session=session
+        )
+
+        self.assertEqual(
+            product["variants"],
+            [
+                {"name": "Nominal: 10", "price": 0.09, "stock_quantity": 0},
+                {"name": "Nominal: 24", "price": 0.09, "stock_quantity": 40},
+            ],
+        )
+        self.assertEqual([data["opt"] for data in session.posted_data], ["9-72", "9-81"])
+
+    def test_restores_a_truncated_dropdown_name_from_the_description_table(self):
+        page_html = """
+        <h1>Resistor</h1>
+        <span class="id-good-936-price">0.09 AZN</span>
+        <span class="val stock">0</span>
+        <ul id="id-936-options-selectors">
+            <li id="id-936-oitem-9">
+                <span class="opt">Nominal:</span>
+                <select id="id-936-oval-9">
+                    <option value="72"><span class="opt-val-name">10</span></option>
+                    <option value="75"><span class="opt-val-name">1...</span></option>
+                </select>
+            </li>
+        </ul>
+        <div class="shop-info">
+            <table>
+                <tr><td>№</td><td>Nominal</td><td>Pcs.</td></tr>
+                <tr><td>1</td><td>10kOm</td><td>0</td></tr>
+                <tr><td>2</td><td>13kOm</td><td>0</td></tr>
+            </table>
+        </div>
+        """
+        response_text = "$('.id-good-936-price').html('0.09 AZN');$('#id-936-options .val.stock').text('0');"
+        session = FakeSession(
+            page_html,
+            {"9-72": response_text, "9-75": response_text},
+        )
+
+        product = get_product_data(
+            "https://www.elen.az/shop/936/desc/resistor", session=session
+        )
+
+        self.assertEqual(product["variants"][1]["name"], "Nominal: 13")
+
+    def test_keeps_price_and_stock_on_a_product_without_variants(self):
+        page_html = """
+        <h1>Arduino UNO</h1>
+        <span class="id-good-100-price">12.50 AZN</span>
+        <span class="val stock">4</span>
+        <div class="shop-info"><p>Development board.</p></div>
+        """
+        session = FakeSession(page_html, {})
+
+        product = get_product_data(
+            "https://www.elen.az/shop/100/desc/arduino", session=session
+        )
+
+        self.assertEqual(
+            product,
+            {
+                "title": "Arduino UNO",
+                "price": 12.5,
+                "currency": "AZN",
+                "stock_quantity": 4,
+                "description": "Development board.",
+                "url": "https://www.elen.az/shop/100/desc/arduino",
+            },
+        )
 
     def test_downloads_every_combination_of_two_option_groups(self):
         page_html = """
@@ -177,8 +290,8 @@ class ProductParserTests(unittest.TestCase):
 
         self.assertEqual(len(product["variants"]), 4)
         self.assertEqual(
-            product["variants"][3]["options"],
-            {"color": "red", "size": "large"},
+            product["variants"][3]["name"],
+            "color: red | size: large",
         )
 
     def test_rejects_a_url_from_another_site(self):
