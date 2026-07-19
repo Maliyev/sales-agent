@@ -12,9 +12,9 @@ def reply_to_customer(
     selection_instruction,
     response_instruction,
 ):
-    history = load_history(database_path, session_id)
-    reply = get_agent_reply(
-        history,
+    reply = generate_customer_reply(
+        database_path,
+        session_id,
         user_text,
         model,
         api_key,
@@ -24,3 +24,25 @@ def reply_to_customer(
     )
     save_exchange(database_path, session_id, user_text, reply)
     return reply
+
+
+def generate_customer_reply(
+    database_path,
+    session_id,
+    user_text,
+    model,
+    api_key,
+    system_instruction,
+    selection_instruction,
+    response_instruction,
+):
+    history = load_history(database_path, session_id)
+    return get_agent_reply(
+        history,
+        user_text,
+        model,
+        api_key,
+        system_instruction,
+        selection_instruction,
+        response_instruction,
+    )

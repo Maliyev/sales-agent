@@ -10,7 +10,7 @@
 - [x] Search products and let the agent filter relevant candidates.
 - [ ] Improve product choice and answer style using real conversations.
 - [ ] Add conversation context trimming and summaries.
-- [ ] Answer several customer sessions concurrently.
+- [x] Answer several customer sessions concurrently.
 - [x] Add a simple Telegram demo with `/reset`.
 - [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.

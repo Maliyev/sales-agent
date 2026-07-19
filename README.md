@@ -46,8 +46,14 @@ python src/telegram_bot.py
 
 Each Telegram chat uses its own session such as `telegram:123456`. Send
 `/reset` in Telegram to clear only that chat's saved history. This first demo
-uses long polling and processes messages one at a time. It is not a production
-deployment yet.
+uses long polling. Up to four different sessions can wait for Gemini at the
+same time.
+
+Messages from one session stay in order. The bot waits one second before a new
+request so that short message bursts can be combined. If another message
+arrives during the first Gemini request, the old result is not saved or sent.
+The bot rebuilds the request once with both messages. Further messages wait for
+the next turn. This is still a local demo, not a production deployment.
 
 Type `exit` to stop the program.
 
@@ -75,7 +81,7 @@ starts. Edit them to change the assistant's behavior, then restart the bot.
 When a customer asks about a product, the agent works in three short steps:
 
 1. Gemini decides whether a product search is needed.
-2. Search results receive temporary candidate IDs and Gemini keeps up to five
+2. Search results receive temporary candidate IDs and Gemini keeps up to ten
    relevant products.
 3. Python loads current product details and Gemini writes the customer answer.
 
@@ -88,6 +94,7 @@ product data. Python checks every candidate ID before it opens a product URL.
 - `src/main.py` runs the terminal chat.
 - `src/telegram_bot.py` receives and sends Telegram messages.
 - `src/message_service.py` runs one customer message through the shared agent.
+- `src/session_coordinator.py` coordinates parallel sessions and message bursts.
 - `src/agent.py` coordinates product search, selection, and the final answer.
 - `src/chat.py` adds messages to a conversation history.
 - `src/database.py` saves and loads session histories from SQLite.

@@ -6,7 +6,7 @@ from product_search import search_products
 
 
 MAX_SEARCH_RESULTS = 30
-MAX_SELECTED_PRODUCTS = 5
+MAX_SELECTED_PRODUCTS = 10
 
 SEARCH_TOOL = [
     {
@@ -41,7 +41,10 @@ SELECTION_TOOL = [
                         "candidate_ids": {
                             "type": "ARRAY",
                             "items": {"type": "INTEGER"},
-                            "description": "All relevant candidate IDs, no more than 5.",
+                            "description": (
+                                "Relevant candidate IDs ordered from most to least "
+                                "relevant, no more than 10."
+                            ),
                         },
                         "needs_clarification": {"type": "BOOLEAN"},
                         "clarifying_question": {
@@ -262,10 +265,9 @@ def _read_selection(function_call, candidates_by_id):
         raise AgentError("Gemini returned an invalid clarifying question.")
 
     selected_ids = list(dict.fromkeys(candidate_ids))
-    if len(selected_ids) > MAX_SELECTED_PRODUCTS:
-        raise AgentError("Gemini selected more than 5 products.")
     if any(candidate_id not in candidates_by_id for candidate_id in selected_ids):
         raise AgentError("Gemini selected a candidate ID that does not exist.")
+    selected_ids = selected_ids[:MAX_SELECTED_PRODUCTS]
     if not selected_ids and not needs_clarification:
         raise AgentError("Gemini did not select any products.")
     if needs_clarification and not clarifying_question.strip():
