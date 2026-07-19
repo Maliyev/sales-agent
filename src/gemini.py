@@ -6,7 +6,15 @@ CHARACTERS_PER_TOKEN = 3
 MAX_HISTORY_CHARACTERS = MAX_ESTIMATED_TOKENS * CHARACTERS_PER_TOKEN
 
 
-def get_model_reply(history, model, api_key, system_instruction, timeout=60):
+def generate_content(
+    history,
+    model,
+    api_key,
+    system_instruction,
+    tools=None,
+    tool_config=None,
+    timeout=60,
+):
     check_history_size(history)
     check_system_instruction(system_instruction)
 
@@ -19,16 +27,57 @@ def get_model_reply(history, model, api_key, system_instruction, timeout=60):
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": history,
     }
+    if tools is not None:
+        payload["tools"] = tools
+    if tool_config is not None:
+        payload["toolConfig"] = tool_config
 
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     response.raise_for_status()
+    return response.json()
 
-    data = response.json()
 
+def get_model_reply(history, model, api_key, system_instruction, timeout=60):
+    data = generate_content(
+        history,
+        model,
+        api_key,
+        system_instruction,
+        timeout=timeout,
+    )
+    return get_text_response(data)
+
+
+def get_text_response(data):
+    parts = _get_response_parts(data)
+    text_parts = [part["text"] for part in parts if isinstance(part.get("text"), str)]
+
+    if not text_parts:
+        raise RuntimeError("Gemini returned a response without text.")
+    return "".join(text_parts)
+
+
+def get_function_call(data, expected_name=None):
+    for part in _get_response_parts(data):
+        function_call = part.get("functionCall")
+        if not isinstance(function_call, dict):
+            continue
+        if expected_name is None or function_call.get("name") == expected_name:
+            return function_call
+    return None
+
+
+def _get_response_parts(data):
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        parts = data["candidates"][0]["content"]["parts"]
     except (IndexError, KeyError, TypeError) as error:
-        raise RuntimeError("Gemini returned a response without text.") from error
+        raise RuntimeError("Gemini returned an invalid response.") from error
+
+    if not isinstance(parts, list):
+        raise RuntimeError("Gemini returned an invalid response.")
+    if any(not isinstance(part, dict) for part in parts):
+        raise RuntimeError("Gemini returned an invalid response.")
+    return parts
 
 
 def check_history_size(history):
