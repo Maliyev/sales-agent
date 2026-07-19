@@ -101,6 +101,82 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.history, original_history)
         self.assertEqual(len(gemini.calls), 1)
 
+    def test_reads_a_direct_product_link_without_search(self):
+        gemini = FakeGemini([text_response("This product is in stock.")])
+        product_calls = []
+
+        def search_fn(query, max_results):
+            self.fail("Product search should not run for a direct link.")
+
+        def product_data_fn(url):
+            product_calls.append(url)
+            return {"title": "Arduino Uno", "stock_quantity": 4, "url": url}
+
+        url = "https://www.elen.az/shop/101/desc/arduino-uno"
+        reply = get_agent_reply(
+            self.history,
+            f"Is this available? {url}",
+            "model",
+            "key",
+            "base prompt",
+            "selection prompt",
+            "response prompt",
+            search_fn=search_fn,
+            product_data_fn=product_data_fn,
+            generate_fn=gemini,
+        )
+
+        self.assertEqual(reply, "This product is in stock.")
+        self.assertEqual(product_calls, [url])
+        self.assertEqual(len(gemini.calls), 1)
+        final_text = gemini.calls[0]["history"][-1]["parts"][0]["text"]
+        self.assertIn("Arduino Uno", final_text)
+        self.assertIn("response prompt", gemini.calls[0]["system_instruction"])
+
+    def test_reads_each_direct_product_link_only_once(self):
+        gemini = FakeGemini([text_response("Here is the comparison.")])
+        product_calls = []
+        first_url = "https://elen.az/shop/1/desc/first"
+        second_url = "https://www.elen.az/shop/2/desc/second"
+
+        reply = get_agent_reply(
+            self.history,
+            f"Compare {first_url}, {second_url} and again {first_url}",
+            "model",
+            "key",
+            "base prompt",
+            "selection prompt",
+            "response prompt",
+            search_fn=lambda query, max_results: self.fail(
+                "Product search should not run for direct links."
+            ),
+            product_data_fn=lambda url: product_calls.append(url) or {"url": url},
+            generate_fn=gemini,
+        )
+
+        self.assertEqual(reply, "Here is the comparison.")
+        self.assertEqual(product_calls, [first_url, second_url])
+
+    def test_does_not_open_a_link_from_a_false_elen_domain(self):
+        gemini = FakeGemini([text_response("I cannot verify that link.")])
+        false_url = "https://www.elen.az.example.com/shop/1/desc/fake"
+
+        reply = get_agent_reply(
+            self.history,
+            false_url,
+            "model",
+            "key",
+            "base prompt",
+            "selection prompt",
+            "response prompt",
+            search_fn=lambda query, max_results: self.results,
+            product_data_fn=lambda url: self.fail("A false elen.az URL was opened."),
+            generate_fn=gemini,
+        )
+
+        self.assertEqual(reply, "I cannot verify that link.")
+        self.assertEqual(len(gemini.calls), 1)
+
     def test_full_search_list_exists_only_in_selection_call(self):
         gemini = FakeGemini(
             [

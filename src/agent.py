@@ -1,4 +1,6 @@
 import json
+import re
+from urllib.parse import urlparse
 
 from gemini import generate_content, get_function_call, get_text_response
 from product_parser import get_product_data
@@ -88,6 +90,22 @@ def get_agent_reply(
     generate_fn=generate_content,
 ):
     current_history = _with_user_message(history, user_text)
+    product_urls = _extract_product_urls(user_text)
+    if product_urls:
+        selected_products = [product_data_fn(url) for url in product_urls]
+        return _create_final_reply(
+            history,
+            user_text,
+            selected_products,
+            False,
+            "",
+            model,
+            api_key,
+            system_instruction,
+            response_instruction,
+            generate_fn,
+        )
+
     decision = generate_fn(
         current_history,
         model,
@@ -206,6 +224,22 @@ def _with_private_data(history, user_text, label, data):
         f"{label}:\n{json.dumps(data, ensure_ascii=False, separators=(',', ':'))}"
     )
     return list(history) + [{"role": "user", "parts": [{"text": text}]}]
+
+
+def _extract_product_urls(user_text):
+    urls = []
+    for match in re.findall(r"https?://[^\s<>\"']+", user_text):
+        url = match.rstrip(".,;:!?)]}")
+        parsed_url = urlparse(url)
+        if parsed_url.hostname not in {"elen.az", "www.elen.az"}:
+            continue
+        if not re.fullmatch(r"/shop/\d+/desc/[^/]+/?", parsed_url.path):
+            continue
+        if url not in urls:
+            urls.append(url)
+        if len(urls) == MAX_SELECTED_PRODUCTS:
+            break
+    return urls
 
 
 def _get_search_query(function_call):

@@ -9,6 +9,7 @@
 - [x] Parse price and stock from elen.az product pages.
 - [x] Return compact details for radio and dropdown product variants.
 - [x] Search products and let the agent filter relevant candidates.
+- [x] Read direct elen.az product links from customer messages.
 - [ ] Improve product choice and answer style using real conversations.
 - [ ] Add conversation context trimming and summaries.
 - [x] Answer several customer sessions concurrently.

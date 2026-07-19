@@ -11,6 +11,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - stops before it sends an oversized history to Gemini.
 - reads its instructions and store knowledge from Markdown files.
 - searches elen.az and filters several relevant product candidates.
+- reads elen.az product links sent directly by a customer.
 
 ## Setup
 
@@ -84,6 +85,9 @@ When a customer asks about a product, the agent works in three short steps:
 2. Search results receive temporary candidate IDs and Gemini keeps up to ten
    relevant products.
 3. Python loads current product details and Gemini writes the customer answer.
+
+If the customer sends a direct elen.az product link, Python validates and opens
+the link immediately. The search and candidate-selection steps are skipped.
 
 The full search result and the temporary selection response are not added to
 the conversation history or SQLite. The final request contains only the chosen
