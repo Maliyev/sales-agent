@@ -8,6 +8,7 @@ class DatabaseError(RuntimeError):
 
 def initialize_database(database_path):
     def create_tables(connection):
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -138,6 +139,7 @@ def run_database_operation(database_path, operation):
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=5)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA foreign_keys = ON")
 
         result = operation(connection)

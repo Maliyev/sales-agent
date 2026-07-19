@@ -7,10 +7,11 @@ import requests
 
 from agent import AgentError
 from config import load_env_file
-from database import DatabaseError, initialize_database, reset_history
-from message_service import reply_to_customer
+from database import DatabaseError, initialize_database, reset_history, save_exchange
+from message_service import generate_customer_reply
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
+from session_coordinator import SessionCoordinator
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
@@ -62,7 +63,7 @@ def split_message(text):
     ]
 
 
-def handle_update(update, reply_fn, reset_fn, send_fn):
+def handle_update(update, submit_fn, reset_fn, send_fn):
     if not isinstance(update, dict):
         return
 
@@ -103,8 +104,7 @@ def handle_update(update, reply_fn, reset_fn, send_fn):
         send_fn(chat_id, "Naməlum əmr. Mövcud əmr: /reset")
         return
 
-    reply = reply_fn(session_id, text)
-    send_fn(chat_id, reply)
+    submit_fn(session_id, text, chat_id)
 
 
 def run_polling(token, update_handler):
@@ -166,7 +166,7 @@ def main():
         return
 
     def create_reply(session_id, user_text):
-        return reply_to_customer(
+        return generate_customer_reply(
             DATABASE_PATH,
             session_id,
             user_text,
@@ -177,19 +177,48 @@ def main():
             response_instruction,
         )
 
-    def clear_history(session_id):
-        reset_history(DATABASE_PATH, session_id)
+    def save_reply(session_id, user_text, reply):
+        save_exchange(DATABASE_PATH, session_id, user_text, reply)
 
     def send_reply(chat_id, text):
         send_message(telegram_token, chat_id, text)
 
+    def report_error(chat_id, error):
+        print(f"Could not process Telegram message: {error}")
+        try:
+            send_reply(
+                chat_id,
+                "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
+                "yenidən cəhd edin.",
+            )
+        except TelegramError as send_error:
+            print(f"Could not send Telegram error message: {send_error}")
+
+    coordinator = SessionCoordinator(create_reply, save_reply, max_workers=4)
+
+    def submit_message(session_id, user_text, chat_id):
+        coordinator.submit(
+            session_id,
+            user_text,
+            lambda reply: send_reply(chat_id, reply),
+            lambda error: report_error(chat_id, error),
+        )
+
+    def clear_history(session_id):
+        coordinator.reset_session(
+            session_id,
+            lambda: reset_history(DATABASE_PATH, session_id),
+        )
+
     def process_update(update):
-        handle_update(update, create_reply, clear_history, send_reply)
+        handle_update(update, submit_message, clear_history, send_reply)
 
     try:
         run_polling(telegram_token, process_update)
     except KeyboardInterrupt:
         print("Telegram bot stopped.")
+    finally:
+        coordinator.shutdown()
 
 
 def _telegram_request(token, method, request_fn, **kwargs):

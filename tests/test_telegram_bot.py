@@ -19,18 +19,20 @@ from telegram_bot import (
 
 class TelegramBotTests(unittest.TestCase):
     def test_regular_message_uses_a_separate_telegram_session(self):
-        replies = []
+        submissions = []
         sent = []
 
         handle_update(
             {"message": {"chat": {"id": 123}, "text": "Arduino Uno"}},
-            lambda session_id, text: replies.append((session_id, text)) or "Found",
+            lambda session_id, text, chat_id: submissions.append(
+                (session_id, text, chat_id)
+            ),
             lambda session_id: self.fail("Reset should not be called"),
             lambda chat_id, text: sent.append((chat_id, text)),
         )
 
-        self.assertEqual(replies, [("telegram:123", "Arduino Uno")])
-        self.assertEqual(sent, [(123, "Found")])
+        self.assertEqual(submissions, [("telegram:123", "Arduino Uno", 123)])
+        self.assertEqual(sent, [])
 
     def test_reset_clears_only_the_current_telegram_session(self):
         resets = []
@@ -38,7 +40,9 @@ class TelegramBotTests(unittest.TestCase):
 
         handle_update(
             {"message": {"chat": {"id": 456}, "text": "/reset@demo_bot"}},
-            lambda session_id, text: self.fail("Agent should not be called"),
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
             resets.append,
             lambda chat_id, text: sent.append((chat_id, text)),
         )
@@ -52,7 +56,9 @@ class TelegramBotTests(unittest.TestCase):
 
         handle_update(
             {"message": {"chat": {"id": 7}, "photo": []}},
-            lambda session_id, text: self.fail("Agent should not be called"),
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
             lambda session_id: self.fail("Reset should not be called"),
             lambda chat_id, text: sent.append((chat_id, text)),
         )
