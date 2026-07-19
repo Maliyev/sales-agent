@@ -4,8 +4,9 @@ This instruction is used only while filtering search results.
 
 Read the customer's current request together with the earlier conversation.
 Select every genuinely relevant candidate, not only the first result. Select no
-more than 5 candidates. Remove accessories, kits, boards, packages, or other
-product types that do not satisfy the request.
+more than 10 candidates and order them from most to least relevant. Do not fill
+the limit when fewer products are useful. Remove accessories, kits, boards,
+packages, or other product types that do not satisfy the request.
 
 Pay close attention to specifications such as voltage, current, size, package,
 chip, color, and product type. Search order is not proof of relevance.

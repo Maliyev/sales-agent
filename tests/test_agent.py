@@ -167,24 +167,39 @@ class AgentTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError, "does not exist"):
             self.call_agent(gemini)
 
-    def test_rejects_more_than_five_selected_products(self):
-        results = [dict(self.results[0], url=f"https://www.elen.az/shop/{i}/desc/x") for i in range(1, 7)]
+    def test_caps_more_than_ten_selected_products(self):
+        results = [
+            dict(
+                self.results[0],
+                url=f"https://www.elen.az/shop/{i}/desc/x",
+            )
+            for i in range(1, 12)
+        ]
         gemini = FakeGemini(
             [
                 function_response("search_products", {"query": "diode"}),
                 function_response(
                     "select_product_candidates",
                     {
-                        "candidate_ids": [1, 2, 3, 4, 5, 6],
+                        "candidate_ids": list(range(1, 12)),
                         "needs_clarification": False,
                         "clarifying_question": "",
                     },
                 ),
+                text_response("Ten useful products"),
             ]
         )
+        detail_calls = []
 
-        with self.assertRaisesRegex(AgentError, "more than 5"):
-            self.call_agent(gemini, search_fn=lambda query, max_results: results)
+        reply = self.call_agent(
+            gemini,
+            search_fn=lambda query, max_results: results,
+            product_data_fn=lambda url: detail_calls.append(url) or {"url": url},
+        )
+
+        self.assertEqual(reply, "Ten useful products")
+        self.assertEqual(len(detail_calls), 10)
+        self.assertNotIn(results[10]["url"], detail_calls)
 
     def test_clarification_requires_a_question(self):
         gemini = FakeGemini(
