@@ -11,5 +11,7 @@
 - [ ] Improve product choice and answer style using real conversations.
 - [ ] Add conversation context trimming and summaries.
 - [ ] Answer several customer sessions concurrently.
+- [x] Add a simple Telegram demo with `/reset`.
+- [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.
 - [ ] Add WhatsApp Cloud API.

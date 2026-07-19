@@ -3,17 +3,16 @@ from pathlib import Path
 
 import requests
 
-from agent import AgentError, get_agent_reply
+from agent import AgentError
 from config import load_env_file
 from database import (
     DatabaseError,
     create_session,
     initialize_database,
     list_session_ids,
-    load_history,
     reset_history,
-    save_exchange,
 )
+from message_service import reply_to_customer
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
 
@@ -106,9 +105,9 @@ def main():
             continue
 
         try:
-            history = load_history(DATABASE_PATH, session_id)
-            reply = get_agent_reply(
-                history,
+            reply = reply_to_customer(
+                DATABASE_PATH,
+                session_id,
                 user_text,
                 model,
                 api_key,
@@ -116,7 +115,6 @@ def main():
                 selection_instruction,
                 response_instruction,
             )
-            save_exchange(DATABASE_PATH, session_id, user_text, reply)
         except ProductSearchError as error:
             print(f"Product search error: {error}")
             continue
