@@ -12,6 +12,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - reads its instructions and store knowledge from Markdown files.
 - searches elen.az and filters several relevant product candidates.
 - reads elen.az product links sent directly by a customer.
+- permanently blocks a session that sends more than 15 messages in 60 seconds.
 
 ## Setup
 
@@ -70,6 +71,8 @@ They stay separate even when the part after `:` is the same.
 
 The database is created automatically as `data/sales_agent.db`. It is local to
 this computer and is ignored by Git because it can contain customer messages.
+Spam limits and blocked session IDs are stored in the same database. A blocked
+session stays blocked after the program restarts and is not cleared by `/reset`.
 
 The project reads simple `KEY=value` lines from `.env` itself. It uses
 `requests` for the direct HTTP request to Gemini and does not use a Gemini SDK.
@@ -104,6 +107,7 @@ are included as plain text, with table rows kept on separate lines.
 - `src/main.py` runs the terminal chat.
 - `src/telegram_bot.py` receives and sends Telegram messages.
 - `src/message_service.py` runs one customer message through the shared agent.
+- `src/message_guard.py` blocks sessions that exceed the message rate limit.
 - `src/session_coordinator.py` coordinates parallel sessions and message bursts.
 - `src/agent.py` coordinates product search, selection, and the final answer.
 - `src/chat.py` adds messages to a conversation history.

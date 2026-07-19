@@ -51,6 +51,17 @@ class TelegramBotTests(unittest.TestCase):
         self.assertEqual(sent[0][0], 456)
         self.assertIn("silindi", sent[0][1])
 
+    def test_blocked_session_is_ignored_before_commands_or_agent(self):
+        handle_update(
+            {"message": {"chat": {"id": 456}, "text": "/start"}},
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: self.fail("A blocked session should get no reply"),
+            lambda session_id: False,
+        )
+
     def test_non_text_message_does_not_call_the_agent(self):
         sent = []
 

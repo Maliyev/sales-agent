@@ -1,3 +1,4 @@
+import math
 import sqlite3
 from pathlib import Path
 
@@ -32,6 +33,30 @@ def initialize_database(database_path):
             """
             CREATE INDEX IF NOT EXISTS messages_by_session
             ON messages(session_id, id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recent_messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                received_at REAL NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS recent_messages_by_session
+            ON recent_messages(session_id, received_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS blocked_sessions (
+                session_id TEXT PRIMARY KEY,
+                blocked_at REAL NOT NULL,
+                reason TEXT NOT NULL
+            )
             """
         )
 
@@ -112,6 +137,69 @@ def reset_history(database_path, session_id):
         )
 
     run_database_operation(database_path, delete_messages)
+
+
+def record_incoming_message(
+    database_path,
+    session_id,
+    received_at,
+    max_messages,
+    window_seconds,
+):
+    session_id = validate_session_id(session_id)
+    if isinstance(received_at, bool) or not isinstance(received_at, (int, float)):
+        raise DatabaseError("Message time must be a number.")
+    if not math.isfinite(received_at):
+        raise DatabaseError("Message time must be finite.")
+
+    def record_message(connection):
+        connection.execute("BEGIN IMMEDIATE")
+
+        blocked = connection.execute(
+            "SELECT 1 FROM blocked_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if blocked is not None:
+            return False
+
+        cutoff = received_at - window_seconds
+        connection.execute(
+            "DELETE FROM recent_messages WHERE received_at <= ?",
+            (cutoff,),
+        )
+        message_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM recent_messages
+            WHERE session_id = ? AND received_at > ?
+            """,
+            (session_id, cutoff),
+        ).fetchone()[0]
+
+        if message_count >= max_messages:
+            reason = (
+                f"More than {max_messages} messages in {window_seconds} seconds"
+            )
+            connection.execute(
+                """
+                INSERT INTO blocked_sessions (session_id, blocked_at, reason)
+                VALUES (?, ?, ?)
+                """,
+                (session_id, received_at, reason),
+            )
+            connection.execute(
+                "DELETE FROM recent_messages WHERE session_id = ?",
+                (session_id,),
+            )
+            return False
+
+        connection.execute(
+            "INSERT INTO recent_messages (session_id, received_at) VALUES (?, ?)",
+            (session_id, received_at),
+        )
+        return True
+
+    return run_database_operation(database_path, record_message)
 
 
 def validate_session_id(session_id):
