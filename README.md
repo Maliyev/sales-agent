@@ -28,6 +28,27 @@ Run the chat:
 python src/main.py
 ```
 
+## Telegram demo
+
+Create a bot by opening [@BotFather](https://t.me/BotFather), send `/newbot`,
+and follow its instructions. Keep the received token private and add it only to
+your local `.env` file:
+
+```text
+TELEGRAM_BOT_TOKEN=your_real_token
+```
+
+Run the Telegram bot while this computer stays online:
+
+```powershell
+python src/telegram_bot.py
+```
+
+Each Telegram chat uses its own session such as `telegram:123456`. Send
+`/reset` in Telegram to clear only that chat's saved history. This first demo
+uses long polling and processes messages one at a time. It is not a production
+deployment yet.
+
 Type `exit` to stop the program.
 
 Useful terminal commands:
@@ -65,6 +86,8 @@ product data. Python checks every candidate ID before it opens a product URL.
 ## Project layout
 
 - `src/main.py` runs the terminal chat.
+- `src/telegram_bot.py` receives and sends Telegram messages.
+- `src/message_service.py` runs one customer message through the shared agent.
 - `src/agent.py` coordinates product search, selection, and the final answer.
 - `src/chat.py` adds messages to a conversation history.
 - `src/database.py` saves and loads session histories from SQLite.
