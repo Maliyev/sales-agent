@@ -144,6 +144,8 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Verified diode", final_text)
         self.assertIn("Verified diode-kit", final_text)
         self.assertIn("Do you need one diode or a kit?", final_text)
+        self.assertNotIn("stock_quantity", selection_text)
+        self.assertNotIn("availability", selection_text)
         self.assertEqual(self.history, original_history)
         self.assertIn("selection prompt", gemini.calls[1]["system_instruction"])
         self.assertNotIn("selection prompt", gemini.calls[2]["system_instruction"])

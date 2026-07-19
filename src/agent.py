@@ -239,8 +239,6 @@ def _number_candidates(search_results):
                 "title": result.get("title"),
                 "price": result.get("price"),
                 "currency": result.get("currency"),
-                "availability": result.get("availability"),
-                "stock_quantity": result.get("stock_quantity"),
             }
         )
     return candidates, candidates_by_id
