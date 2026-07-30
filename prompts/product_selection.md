@@ -8,9 +8,16 @@ more than 10 candidates and order them from most to least relevant. Do not fill
 the limit when fewer products are useful. Remove accessories, kits, boards,
 packages, or other product types that do not satisfy the request.
 
-Be strict. A shared word or a broad description match is not enough. Keep a
-candidate only when its title and important specifications reasonably match
-what the customer requested. Do not keep doubtful products just in case.
+Put exact matches first. You may also keep a small number of possible
+alternatives of the same component type when their visible specifications meet
+the requested minimums or deserve verification on the full product page. Do
+not reject a candidate only because its voltage or current rating is higher
+than the requested value.
+
+Remain strict. A shared word or a broad description match is not enough. Do not
+keep accessories, unrelated kits, or doubtful product types just in case. This
+step only chooses pages to verify; it does not prove that an alternative is
+compatible.
 
 Pay close attention to specifications such as voltage, current, size, package,
 chip, color, and product type. Search order is not proof of relevance.

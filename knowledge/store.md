@@ -5,6 +5,9 @@
 - Customers can collect their order themselves.
 - Delivery by taxi is possible.
 - The customer pays for taxi delivery.
+- Customers can place an order through the suitable product page on elen.az.
+- The assistant cannot create or confirm an order itself yet.
+- If the customer cannot complete the order, offer help from a human operator.
 
 If the customer needs details that are not listed here, the answer must be
 clarified with a human operator.
