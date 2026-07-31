@@ -18,4 +18,6 @@
 - [x] Let the agent explicitly request a human operator.
 - [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.
-- [ ] Add WhatsApp Cloud API.
+- [x] Build the local WhatsApp Cloud API connector.
+- [ ] Verify the WhatsApp connector with Meta's test number and a public tunnel.
+- [ ] Deploy the WhatsApp webhook to a permanent HTTPS host.

@@ -6,13 +6,13 @@ import time
 import requests
 
 from agent import AgentError
-from agent_reply import AgentReply
 from config import load_env_file
 from database import DatabaseError, initialize_database, reset_history, save_exchange
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
+from reply_delivery import deliver_agent_reply
 from session_coordinator import SessionCoordinator
 
 
@@ -63,15 +63,6 @@ def split_message(text):
         text[start : start + MAX_MESSAGE_LENGTH]
         for start in range(0, len(text), MAX_MESSAGE_LENGTH)
     ]
-
-
-def deliver_agent_reply(chat_id, session_id, reply, send_fn, operator_fn):
-    if not isinstance(reply, AgentReply):
-        raise TelegramError("Agent returned an invalid reply.")
-
-    send_fn(chat_id, reply.customer_reply)
-    if reply.operator_message is not None:
-        operator_fn(session_id, reply.operator_message)
 
 
 def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):

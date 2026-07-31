@@ -97,6 +97,33 @@ When a customer asks about a product, the agent works in three short steps:
 If the customer sends a direct elen.az product link, Python validates and opens
 the link immediately. The search and candidate-selection steps are skipped.
 
+## WhatsApp Cloud API
+
+The WhatsApp connector uses Meta's official Cloud API. It is separate from the
+agent core: the webhook turns an incoming customer message into a session such
+as `whatsapp:994501234567`, then uses the same history, spam guard, concurrency,
+and agent code as Telegram.
+
+The connector currently accepts text messages. It validates Meta's
+`X-Hub-Signature-256` signature, ignores events for other phone numbers, and
+stores received WhatsApp message IDs in SQLite so webhook retries do not create
+duplicate customer replies.
+
+Required local settings are listed in `.env.example`. This checkout can also
+load private Meta credentials from `.private/meta-whatsapp/credentials.env`.
+That folder is local and must never be committed.
+
+Run the local webhook server:
+
+```powershell
+python src/whatsapp_bot.py
+```
+
+It listens on `http://127.0.0.1:8000/webhooks/whatsapp`. Meta needs a public
+HTTPS callback URL, so local development will use an HTTPS tunnel such as
+ngrok. Router port forwarding is not required. The value entered in Meta's
+Verify token field must exactly match `WHATSAPP_VERIFY_TOKEN`.
+
 The full search result and the temporary selection response are not added to
 the conversation history or SQLite. The final request contains only the chosen
 product data. Python checks every candidate ID before it opens a product URL.
@@ -111,6 +138,12 @@ are included as plain text, with table rows kept on separate lines.
 
 - `src/main.py` runs the terminal chat.
 - `src/telegram_bot.py` receives and sends Telegram messages.
+- `src/whatsapp_bot.py` connects the shared agent to WhatsApp Cloud API.
+- `src/whatsapp_client.py` sends text messages through Meta Graph API.
+- `src/whatsapp_webhook.py` verifies and parses Meta webhook events.
+- `src/whatsapp_server.py` exposes the small Flask webhook endpoint.
+- `src/whatsapp_store.py` prevents duplicate webhook processing.
+- `src/reply_delivery.py` delivers normal replies and operator events to channels.
 - `src/message_service.py` runs one customer message through the shared agent.
 - `src/message_guard.py` blocks sessions that exceed the message rate limit.
 - `src/session_coordinator.py` coordinates parallel sessions and message bursts.
