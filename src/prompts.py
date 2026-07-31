@@ -7,6 +7,7 @@ PROMPT_FILES = (
     "prompts/02_response_rules.md",
     "prompts/03_security_rules.md",
     "prompts/04_product_tools.md",
+    "prompts/05_operator.md",
     "knowledge/store.md",
 )
 

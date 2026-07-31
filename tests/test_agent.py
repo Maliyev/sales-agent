@@ -5,6 +5,7 @@ import unittest
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent import AgentError, get_agent_reply
+from agent_reply import AgentReply
 
 
 def text_response(text):
@@ -97,7 +98,7 @@ class AgentTests(unittest.TestCase):
 
         reply = self.call_agent(gemini)
 
-        self.assertEqual(reply, "Please specify the package.")
+        self.assertEqual(reply, AgentReply("Please specify the package."))
         self.assertEqual(self.history, original_history)
         self.assertEqual(len(gemini.calls), 1)
 
@@ -126,7 +127,7 @@ class AgentTests(unittest.TestCase):
             generate_fn=gemini,
         )
 
-        self.assertEqual(reply, "This product is in stock.")
+        self.assertEqual(reply, AgentReply("This product is in stock."))
         self.assertEqual(product_calls, [url])
         self.assertEqual(len(gemini.calls), 1)
         final_text = gemini.calls[0]["history"][-1]["parts"][0]["text"]
@@ -154,7 +155,7 @@ class AgentTests(unittest.TestCase):
             generate_fn=gemini,
         )
 
-        self.assertEqual(reply, "Here is the comparison.")
+        self.assertEqual(reply, AgentReply("Here is the comparison."))
         self.assertEqual(product_calls, [first_url, second_url])
 
     def test_does_not_open_a_link_from_a_false_elen_domain(self):
@@ -174,8 +175,91 @@ class AgentTests(unittest.TestCase):
             generate_fn=gemini,
         )
 
-        self.assertEqual(reply, "I cannot verify that link.")
+        self.assertEqual(reply, AgentReply("I cannot verify that link."))
         self.assertEqual(len(gemini.calls), 1)
+
+    def test_operator_request_returns_separate_messages_without_search(self):
+        gemini = FakeGemini(
+            [
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "Please contact our operator.",
+                        "operator_message": "The customer is ready to order.",
+                    },
+                )
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            search_fn=lambda query, max_results: self.fail(
+                "Search should not run after an operator request."
+            ),
+        )
+
+        self.assertEqual(
+            reply,
+            AgentReply(
+                "Please contact our operator.",
+                "The customer is ready to order.",
+            ),
+        )
+        declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertIn("request_operator", [item["name"] for item in declarations])
+
+    def test_operator_request_can_be_returned_after_product_details(self):
+        gemini = FakeGemini(
+            [
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "The operator will help with the order.",
+                        "operator_message": "Customer wants to order Arduino Uno.",
+                    },
+                )
+            ]
+        )
+        url = "https://www.elen.az/shop/101/desc/arduino-uno"
+
+        reply = get_agent_reply(
+            self.history,
+            f"I want to order this: {url}",
+            "model",
+            "key",
+            "base prompt",
+            "selection prompt",
+            "response prompt",
+            product_data_fn=lambda product_url: {"title": "Arduino Uno"},
+            generate_fn=gemini,
+        )
+
+        self.assertEqual(
+            reply.operator_message,
+            "Customer wants to order Arduino Uno.",
+        )
+        declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual([item["name"] for item in declarations], ["request_operator"])
+
+    def test_operator_request_requires_both_messages(self):
+        gemini = FakeGemini(
+            [
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "Please contact the operator.",
+                        "operator_message": "",
+                    },
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(AgentError, "empty operator message"):
+            self.call_agent(gemini)
 
     def test_full_search_list_exists_only_in_selection_call(self):
         gemini = FakeGemini(
@@ -206,7 +290,7 @@ class AgentTests(unittest.TestCase):
         original_history = list(self.history)
         reply = self.call_agent(gemini, search_fn, product_data_fn)
 
-        self.assertEqual(reply, "Do you need one diode or a kit?")
+        self.assertEqual(reply, AgentReply("Do you need one diode or a kit?"))
         self.assertEqual(search_calls, [("diode 200V", 30)])
         self.assertEqual(
             detail_calls,
@@ -275,7 +359,7 @@ class AgentTests(unittest.TestCase):
             product_data_fn=lambda url: detail_calls.append(url) or {"url": url},
         )
 
-        self.assertEqual(reply, "Ten useful products")
+        self.assertEqual(reply, AgentReply("Ten useful products"))
         self.assertEqual(len(detail_calls), 10)
         self.assertNotIn(results[10]["url"], detail_calls)
 

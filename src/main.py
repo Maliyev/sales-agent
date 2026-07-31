@@ -128,7 +128,9 @@ def main():
             print(f"Agent error: {error}")
             continue
 
-        print(f"Agent: {reply}")
+        print(f"Agent: {reply.customer_reply}")
+        if reply.operator_message is not None:
+            print(f"Operator request: {reply.operator_message}")
 
 
 if __name__ == "__main__":

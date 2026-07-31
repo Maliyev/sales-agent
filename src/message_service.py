@@ -22,7 +22,7 @@ def reply_to_customer(
         selection_instruction,
         response_instruction,
     )
-    save_exchange(database_path, session_id, user_text, reply)
+    save_exchange(database_path, session_id, user_text, reply.customer_reply)
     return reply
 
 

@@ -13,6 +13,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - searches elen.az and filters several relevant product candidates.
 - reads elen.az product links sent directly by a customer.
 - permanently blocks a session that sends more than 15 messages in 60 seconds.
+- can explicitly refer a customer to a human operator.
 
 ## Setup
 
@@ -82,6 +83,10 @@ is longer than roughly 250,000 tokens.
 The files in `prompts/` and `knowledge/store.md` are loaded when the program
 starts. Edit them to change the assistant's behavior, then restart the bot.
 
+When Gemini calls `request_operator`, the customer receives a short referral
+message. A separate operator summary is printed in the terminal for now. The
+session remains active, and no operator message is added to customer history.
+
 When a customer asks about a product, the agent works in three short steps:
 
 1. Gemini decides whether a product search is needed.
@@ -110,6 +115,7 @@ are included as plain text, with table rows kept on separate lines.
 - `src/message_guard.py` blocks sessions that exceed the message rate limit.
 - `src/session_coordinator.py` coordinates parallel sessions and message bursts.
 - `src/agent.py` coordinates product search, selection, and the final answer.
+- `src/agent_reply.py` separates the customer reply from an operator request.
 - `src/chat.py` adds messages to a conversation history.
 - `src/database.py` saves and loads session histories from SQLite.
 - `src/prompts.py` builds the system instruction from Markdown files.

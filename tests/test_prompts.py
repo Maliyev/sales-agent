@@ -12,13 +12,20 @@ class PromptTests(unittest.TestCase):
     def test_loads_all_prompt_blocks_in_order(self):
         with patch(
             "prompts.Path.read_text",
-            side_effect=["Role", "Rules", "Security", "Tools", "Knowledge"],
+            side_effect=[
+                "Role",
+                "Rules",
+                "Security",
+                "Tools",
+                "Operator",
+                "Knowledge",
+            ],
         ):
             instruction = load_system_instruction()
 
         self.assertEqual(
             instruction,
-            "Role\n\nRules\n\nSecurity\n\nTools\n\nKnowledge",
+            "Role\n\nRules\n\nSecurity\n\nTools\n\nOperator\n\nKnowledge",
         )
 
     def test_loads_one_special_prompt(self):
@@ -35,7 +42,7 @@ class PromptTests(unittest.TestCase):
     def test_reports_an_empty_prompt_file(self):
         with patch(
             "prompts.Path.read_text",
-            side_effect=["Role", "Rules", "", "Tools", "Knowledge"],
+            side_effect=["Role", "Rules", "", "Tools", "Operator", "Knowledge"],
         ):
             with self.assertRaisesRegex(RuntimeError, "Prompt file is empty"):
                 load_system_instruction()
