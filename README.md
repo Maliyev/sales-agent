@@ -121,8 +121,39 @@ python src/whatsapp_bot.py
 
 It listens on `http://127.0.0.1:8000/webhooks/whatsapp`. Meta needs a public
 HTTPS callback URL, so local development will use an HTTPS tunnel such as
-ngrok. Router port forwarding is not required. The value entered in Meta's
+Cloudflare Tunnel or ngrok. Router port forwarding is not required. The value entered in Meta's
 Verify token field must exactly match `WHATSAPP_VERIFY_TOKEN`.
+
+## Application logs
+
+WhatsApp and Telegram write readable operational logs to
+`data/logs/sales_agent.log`. The file records startup, queueing, reply timing,
+delivery, operator requests, blocked sessions, and errors. It does not record
+message text, access tokens, API keys, or raw customer identifiers.
+
+The active file is limited to 2 MB. Up to three older files are kept
+automatically. To watch the log live in PowerShell:
+
+```powershell
+Get-Content .\data\logs\sales_agent.log -Wait -Tail 50
+```
+
+Conversation history remains in SQLite and is not duplicated in the log. A
+later local admin dashboard will read sessions and usage statistics from
+structured database tables instead of parsing this text file.
+
+## Local chat dashboard
+
+Run the local operator dashboard in a separate PowerShell window:
+
+```powershell
+python src/admin_dashboard.py
+```
+
+Open `http://127.0.0.1:8001`. The page lists the current SQLite sessions,
+refreshes the selected conversation automatically, and can send a manual reply
+to WhatsApp or Telegram sessions through the existing channel clients. It binds
+only to localhost and is not exposed through the WhatsApp Cloudflare tunnel.
 
 The full search result and the temporary selection response are not added to
 the conversation history or SQLite. The final request contains only the chosen
@@ -144,6 +175,7 @@ are included as plain text, with table rows kept on separate lines.
 - `src/whatsapp_server.py` exposes the small Flask webhook endpoint.
 - `src/whatsapp_store.py` prevents duplicate webhook processing.
 - `src/reply_delivery.py` delivers normal replies and operator events to channels.
+- `src/app_logging.py` configures private rotating application logs.
 - `src/message_service.py` runs one customer message through the shared agent.
 - `src/message_guard.py` blocks sessions that exceed the message rate limit.
 - `src/session_coordinator.py` coordinates parallel sessions and message bursts.

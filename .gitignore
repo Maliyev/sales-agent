@@ -7,3 +7,7 @@ __pycache__/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/logs/
+data/runtime/
+data/test-temp-*/
+data/tmp*/

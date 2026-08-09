@@ -2,6 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import time
 
+from app_logging import get_logger, session_reference
+
+
+logger = get_logger("sessions")
+
 
 class SessionState:
     def __init__(self):
@@ -63,6 +68,15 @@ class SessionCoordinator:
                 state.running = True
                 should_start = True
 
+            pending_count = len(state.pending_messages)
+
+        logger.info(
+            "Message queued | session=%s pending=%d worker_started=%s",
+            session_reference(session_id),
+            pending_count,
+            should_start,
+        )
+
         if should_start:
             self.executor.submit(self._run_session, session_id, state)
 
@@ -78,6 +92,8 @@ class SessionCoordinator:
             state.reply_callback = None
             state.error_callback = None
             reset_history()
+
+        logger.info("Session reset | session=%s", session_reference(session_id))
 
     def shutdown(self, wait=True):
         with self.states_lock:
@@ -112,7 +128,20 @@ class SessionCoordinator:
 
                 while True:
                     combined_text = "\n".join(messages)
+                    started_at = time.monotonic()
+                    logger.info(
+                        "Reply generation started | session=%s messages=%d chars=%d",
+                        session_reference(session_id),
+                        len(messages),
+                        len(combined_text),
+                    )
                     reply = self.generate_reply(session_id, combined_text)
+                    duration_ms = round((time.monotonic() - started_at) * 1000)
+                    logger.info(
+                        "Reply generated | session=%s duration_ms=%d",
+                        session_reference(session_id),
+                        duration_ms,
+                    )
 
                     with state.lock:
                         if state.generation != generation:
@@ -127,9 +156,18 @@ class SessionCoordinator:
                             revision = state.revision
                             reply_callback = state.reply_callback
                             restarted = True
+                            logger.info(
+                                "Reply superseded by a newer message | session=%s",
+                                session_reference(session_id),
+                            )
                             continue
 
                         self.save_exchange(session_id, combined_text, reply)
+
+                    logger.info(
+                        "Exchange saved | session=%s",
+                        session_reference(session_id),
+                    )
 
                     reply_callback(reply)
                     break
@@ -139,6 +177,11 @@ class SessionCoordinator:
                         state.running = False
                         return
         except Exception as error:
+            logger.exception(
+                "Session processing failed | session=%s error_type=%s",
+                session_reference(session_id),
+                type(error).__name__,
+            )
             with state.lock:
                 error_callback = state.error_callback
                 state.pending_messages.clear()

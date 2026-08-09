@@ -6,6 +6,7 @@ import time
 import requests
 
 from agent import AgentError
+from app_logging import configure_logging, get_logger, session_reference
 from config import load_env_file
 from database import DatabaseError, initialize_database, reset_history, save_exchange
 from message_guard import is_message_allowed
@@ -17,8 +18,10 @@ from session_coordinator import SessionCoordinator
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
+LOG_PATH = Path(__file__).resolve().parents[1] / "data" / "logs" / "sales_agent.log"
 POLL_TIMEOUT_SECONDS = 25
 MAX_MESSAGE_LENGTH = 4000
+logger = get_logger("telegram")
 
 
 class TelegramError(RuntimeError):
@@ -88,6 +91,10 @@ def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
     text = text.strip()
     session_id = f"telegram:{chat_id}"
     if allow_fn is not None and not allow_fn(session_id):
+        logger.warning(
+            "Telegram session blocked by message guard | session=%s",
+            session_reference(session_id),
+        )
         return
 
     command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
@@ -102,6 +109,10 @@ def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
 
     if command == "/reset":
         reset_fn(session_id)
+        logger.info(
+            "Telegram session reset | session=%s",
+            session_reference(session_id),
+        )
         send_fn(chat_id, "Söhbət tarixçəsi silindi.")
         return
 
@@ -114,13 +125,13 @@ def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
 
 def run_polling(token, update_handler):
     offset = None
-    print("Telegram bot started. Press Ctrl+C to stop.")
+    logger.info("Telegram polling started")
 
     while True:
         try:
             updates = get_updates(token, offset)
         except TelegramError as error:
-            print(f"Telegram polling error: {error}")
+            logger.error("Telegram polling failed: %s", error)
             time.sleep(3)
             continue
 
@@ -139,7 +150,7 @@ def run_polling(token, update_handler):
                 requests.RequestException,
                 RuntimeError,
             ) as error:
-                print(f"Could not process Telegram update: {error}")
+                logger.exception("Could not process Telegram update: %s", error)
 
 
 def get_settings():
@@ -161,13 +172,14 @@ def main():
     load_env_file()
 
     try:
+        configure_logging(LOG_PATH)
         api_key, model, telegram_token = get_settings()
         initialize_database(DATABASE_PATH)
         system_instruction = load_system_instruction()
         selection_instruction = load_prompt_file("prompts/product_selection.md")
         response_instruction = load_prompt_file("prompts/product_response.md")
     except (DatabaseError, RuntimeError) as error:
-        print(f"Startup error: {error}")
+        logger.exception("Telegram startup failed: %s", error)
         return
 
     def create_reply(session_id, user_text):
@@ -192,7 +204,11 @@ def main():
         print(f"Operator request for {session_id}: {message}")
 
     def report_error(chat_id, error):
-        print(f"Could not process Telegram message: {error}")
+        logger.error(
+            "Could not process Telegram message | error_type=%s error=%s",
+            type(error).__name__,
+            error,
+        )
         try:
             send_reply(
                 chat_id,
@@ -200,7 +216,7 @@ def main():
                 "yenidən cəhd edin.",
             )
         except TelegramError as send_error:
-            print(f"Could not send Telegram error message: {send_error}")
+            logger.error("Could not send Telegram error message: %s", send_error)
 
     coordinator = SessionCoordinator(create_reply, save_reply, max_workers=4)
 
@@ -236,7 +252,7 @@ def main():
     try:
         run_polling(telegram_token, process_update)
     except KeyboardInterrupt:
-        print("Telegram bot stopped.")
+        logger.info("Telegram bot stopped")
     finally:
         coordinator.shutdown()
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import requests
 
 from agent import AgentError
+from app_logging import configure_logging, get_logger, session_reference
 from config import load_env_file
 from database import DatabaseError, initialize_database, save_exchange
 from message_guard import is_message_allowed
@@ -24,9 +25,11 @@ from whatsapp_webhook import WhatsAppTextMessage
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PATH = PROJECT_ROOT / "data" / "sales_agent.db"
+LOG_PATH = PROJECT_ROOT / "data" / "logs" / "sales_agent.log"
 PRIVATE_ENV_PATH = PROJECT_ROOT / ".private" / "meta-whatsapp" / "credentials.env"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+logger = get_logger("whatsapp")
 
 
 def handle_incoming_message(
@@ -40,14 +43,25 @@ def handle_incoming_message(
     if not isinstance(message, WhatsAppTextMessage):
         raise WhatsAppError("WhatsApp returned an invalid incoming message.")
     if message.phone_number_id != expected_phone_number_id:
+        logger.info("Ignored event for another WhatsApp phone number")
         return False
     if not claim_fn(message.message_id, message.sender_id):
+        logger.info("Ignored duplicate WhatsApp message")
         return False
 
     session_id = f"whatsapp:{message.sender_id}"
     try:
         if not allow_fn(session_id):
+            logger.warning(
+                "WhatsApp session blocked by message guard | session=%s",
+                session_reference(session_id),
+            )
             return False
+        logger.info(
+            "WhatsApp message accepted | session=%s chars=%d",
+            session_reference(session_id),
+            len(message.text),
+        )
         submit_fn(session_id, message.text, message.sender_id)
     except Exception:
         release_fn(message.message_id)
@@ -82,6 +96,7 @@ def main():
     load_env_file(PRIVATE_ENV_PATH)
 
     try:
+        configure_logging(LOG_PATH)
         settings = get_settings()
         initialize_database(DATABASE_PATH)
         initialize_whatsapp_store(DATABASE_PATH)
@@ -89,7 +104,7 @@ def main():
         selection_instruction = load_prompt_file("prompts/product_selection.md")
         response_instruction = load_prompt_file("prompts/product_response.md")
     except (DatabaseError, RuntimeError) as error:
-        print(f"WhatsApp startup error: {error}")
+        logger.exception("WhatsApp startup failed: %s", error)
         return
 
     def create_reply(session_id, user_text):
@@ -120,7 +135,11 @@ def main():
         print(f"Operator request for {session_id}: {message}")
 
     def report_error(recipient, error):
-        print(f"Could not process WhatsApp message: {error}")
+        logger.error(
+            "Could not process WhatsApp message | error_type=%s error=%s",
+            type(error).__name__,
+            error,
+        )
         try:
             send_reply(
                 recipient,
@@ -128,7 +147,7 @@ def main():
                 "yenidən cəhd edin.",
             )
         except WhatsAppError as send_error:
-            print(f"Could not send WhatsApp error message: {send_error}")
+            logger.error("Could not send WhatsApp error message: %s", send_error)
 
     coordinator = SessionCoordinator(create_reply, save_reply, max_workers=4)
 
@@ -166,9 +185,11 @@ def main():
             settings["WHATSAPP_APP_SECRET"],
             process_message,
         )
-        print(
-            f"WhatsApp webhook listening on http://{DEFAULT_HOST}:{DEFAULT_PORT}"
-            f"{WEBHOOK_PATH}"
+        logger.info(
+            "WhatsApp webhook started | url=http://%s:%d%s",
+            DEFAULT_HOST,
+            DEFAULT_PORT,
+            WEBHOOK_PATH,
         )
         app.run(
             host=DEFAULT_HOST,
@@ -186,7 +207,7 @@ def main():
         RuntimeError,
         ValueError,
     ) as error:
-        print(f"WhatsApp server error: {error}")
+        logger.exception("WhatsApp server failed: %s", error)
     finally:
         coordinator.shutdown()
 

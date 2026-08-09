@@ -19,5 +19,7 @@
 - [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.
 - [x] Build the local WhatsApp Cloud API connector.
-- [ ] Verify the WhatsApp connector with Meta's test number and a public tunnel.
+- [x] Verify the WhatsApp connector with a registered number and public tunnel.
 - [ ] Deploy the WhatsApp webhook to a permanent HTTPS host.
+- [x] Add readable rotating application logs.
+- [ ] Add a local admin dashboard for sessions and usage statistics.

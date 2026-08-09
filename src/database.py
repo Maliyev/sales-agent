@@ -127,6 +127,76 @@ def list_session_ids(database_path):
     return run_database_operation(database_path, read_session_ids)
 
 
+def list_sessions(database_path):
+    def read_sessions(connection):
+        rows = connection.execute(
+            """
+            SELECT
+                sessions.session_id,
+                sessions.created_at,
+                COUNT(messages.id) AS message_count,
+                MAX(messages.id) AS last_message_id,
+                (
+                    SELECT latest.role
+                    FROM messages AS latest
+                    WHERE latest.session_id = sessions.session_id
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                ) AS last_role,
+                (
+                    SELECT latest.text
+                    FROM messages AS latest
+                    WHERE latest.session_id = sessions.session_id
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                ) AS last_text
+            FROM sessions
+            LEFT JOIN messages ON messages.session_id = sessions.session_id
+            GROUP BY sessions.session_id, sessions.created_at
+            ORDER BY COALESCE(MAX(messages.id), 0) DESC, sessions.created_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    return run_database_operation(database_path, read_sessions)
+
+
+def load_session_messages(database_path, session_id):
+    session_id = validate_session_id(session_id)
+
+    def read_messages(connection):
+        rows = connection.execute(
+            """
+            SELECT id, role, text
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    return run_database_operation(database_path, read_messages)
+
+
+def save_model_message(database_path, session_id, text):
+    session_id = validate_session_id(session_id)
+    text = validate_message_text(text)
+
+    def add_message(connection):
+        connection.execute(
+            "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
+            (session_id,),
+        )
+        cursor = connection.execute(
+            "INSERT INTO messages (session_id, role, text) VALUES (?, 'model', ?)",
+            (session_id, text),
+        )
+        return cursor.lastrowid
+
+    return run_database_operation(database_path, add_message)
+
+
 def reset_history(database_path, session_id):
     session_id = validate_session_id(session_id)
 
