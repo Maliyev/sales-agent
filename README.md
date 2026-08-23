@@ -124,23 +124,54 @@ HTTPS callback URL, so local development will use an HTTPS tunnel such as
 Cloudflare Tunnel or ngrok. Router port forwarding is not required. The value entered in Meta's
 Verify token field must exactly match `WHATSAPP_VERIFY_TOKEN`.
 
+## Run everything with one command
+
+```powershell
+python src/runner.py
+```
+
+The runner starts Telegram polling, the WhatsApp webhook server, and the
+admin dashboard in one process with one shared session coordinator
+(six parallel workers). All channels write to the same two log files.
+Stop it with Ctrl+C.
+
+The standalone entry points (`telegram_bot.py`, `whatsapp_bot.py`,
+`admin_dashboard.py`, `main.py`) keep working for running one channel alone,
+but do not combine them with the runner for the same channel.
+
 ## Application logs
 
-WhatsApp and Telegram write readable operational logs to
-`data/logs/sales_agent.log`. The file records startup, queueing, reply timing,
-delivery, operator requests, blocked sessions, and errors. It does not record
-message text, access tokens, API keys, or raw customer identifiers.
+The project writes two rotating log files.
 
-The active file is limited to 2 MB. Up to three older files are kept
-automatically. To watch the log live in PowerShell:
+`data/logs/sales_agent.log` is the operational log. It records startup,
+queueing, reply timing, delivery, operator requests, blocked sessions, and
+errors. It does not record message text, access tokens, or API keys.
+
+`data/logs/conversations.log` is the full conversation log. It records the
+customer message text, the agent's decision steps (product search query,
+found product titles, selected candidates), the final model reply, operator
+requests, and manual replies sent from the dashboard. Each line starts with
+the session ID:
+
+```text
+2026-08-23 21:00:01 | telegram:123456 | USER | Есть Samsung TV?
+2026-08-23 21:00:02 | telegram:123456 | DECISION | search query='Samsung TV'
+2026-08-23 21:00:02 | telegram:123456 | FOUND | query='Samsung TV' found=30 | Samsung 43" Crystal; LG OLED; … ещё 28
+2026-08-23 21:00:03 | telegram:123456 | SELECTED | ids=[3] | Samsung 43" Crystal UHD
+2026-08-23 21:00:05 | telegram:123456 | MODEL | Да, в наличии…
+```
+
+Both active files are limited to 2 MB. Up to three older files are kept
+automatically. To watch a log live in PowerShell:
 
 ```powershell
 Get-Content .\data\logs\sales_agent.log -Wait -Tail 50
+Get-Content .\data\logs\conversations.log -Wait -Tail 50
 ```
 
-Conversation history remains in SQLite and is not duplicated in the log. A
-later local admin dashboard will read sessions and usage statistics from
-structured database tables instead of parsing this text file.
+Do not run `src/runner.py` and a standalone bot for the same channel at the
+same time: two Telegram pollers would steal updates from each other, and the
+WhatsApp port 8000 can only be bound by one process.
 
 ## Local chat dashboard
 
@@ -149,6 +180,9 @@ Run the local operator dashboard in a separate PowerShell window:
 ```powershell
 python src/admin_dashboard.py
 ```
+
+Or use the combined runner, which also serves the dashboard at the same
+address in the same process (see "Run everything with one command").
 
 Open `http://127.0.0.1:8001`. The page lists the current SQLite sessions,
 refreshes the selected conversation automatically, and can send a manual reply
@@ -167,6 +201,7 @@ are included as plain text, with table rows kept on separate lines.
 
 ## Project layout
 
+- `src/runner.py` runs Telegram, WhatsApp, and the dashboard in one process.
 - `src/main.py` runs the terminal chat.
 - `src/telegram_bot.py` receives and sends Telegram messages.
 - `src/whatsapp_bot.py` connects the shared agent to WhatsApp Cloud API.

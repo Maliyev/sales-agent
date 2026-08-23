@@ -1,4 +1,5 @@
 from agent import get_agent_reply
+from app_logging import flatten_text, log_conversation
 from database import load_history, save_exchange
 
 
@@ -37,6 +38,7 @@ def generate_customer_reply(
     response_instruction,
 ):
     history = load_history(database_path, session_id)
+    log_conversation(session_id, "USER", flatten_text(user_text))
     return get_agent_reply(
         history,
         user_text,
@@ -45,4 +47,5 @@ def generate_customer_reply(
         system_instruction,
         selection_instruction,
         response_instruction,
+        session_id=session_id,
     )

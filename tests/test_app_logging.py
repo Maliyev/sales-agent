@@ -12,13 +12,15 @@ from app_logging import (
     LOGGER_NAME,
     close_logging,
     configure_logging,
+    flatten_text,
     get_logger,
-    session_reference,
+    log_conversation,
 )
 
 
 class ApplicationLoggingTests(unittest.TestCase):
     log_path = PROJECT_ROOT / "data" / "logs" / "test_sales_agent.log"
+    conversation_log_path = PROJECT_ROOT / "data" / "logs" / "test_conversations.log"
 
     def setUp(self):
         self._remove_log_files()
@@ -28,19 +30,23 @@ class ApplicationLoggingTests(unittest.TestCase):
         self._remove_log_files()
 
     def _remove_log_files(self):
-        for path in (self.log_path, Path(f"{self.log_path}.1")):
+        for path in (
+            self.log_path,
+            Path(f"{self.log_path}.1"),
+            self.conversation_log_path,
+            Path(f"{self.conversation_log_path}.1"),
+        ):
             if path.exists():
                 path.unlink()
 
-    def test_writes_to_a_rotating_file_without_raw_session_id(self):
+    def test_writes_to_a_rotating_file_with_raw_session_id(self):
         configure_logging(self.log_path, max_bytes=250, backup_count=1)
         logger = get_logger("test")
-        reference = session_reference("whatsapp:994501234567")
 
         for index in range(8):
             logger.info(
                 "Test event | session=%s index=%d padding=%s",
-                reference,
+                "whatsapp:994501234567",
                 index,
                 "x" * 80,
             )
@@ -52,17 +58,31 @@ class ApplicationLoggingTests(unittest.TestCase):
             if path.exists()
         )
 
-        self.assertIn(reference, combined)
-        self.assertNotIn("994501234567", combined)
+        self.assertIn("whatsapp:994501234567", combined)
         self.assertTrue(Path(f"{self.log_path}.1").exists())
 
-    def test_session_reference_is_stable_and_channel_qualified(self):
-        first = session_reference("telegram:123")
-        second = session_reference("telegram:123")
+    def test_conversation_log_keeps_text_out_of_the_operational_log(self):
+        configure_logging(self.log_path, self.conversation_log_path)
+        logger = get_logger("test")
 
-        self.assertEqual(first, second)
-        self.assertTrue(first.startswith("telegram:"))
-        self.assertNotIn("123", first)
+        log_conversation(
+            "telegram:555",
+            "USER",
+            flatten_text("First line\nSecond line"),
+        )
+        log_conversation("telegram:555", "MODEL", "Ответ модели")
+        logger.info("Operational event | session=telegram:555")
+
+        close_logging()
+
+        conversation = self.conversation_log_path.read_text(encoding="utf-8")
+        operational = self.log_path.read_text(encoding="utf-8")
+
+        self.assertIn("telegram:555 | 💬 USER | First line\\nSecond line", conversation)
+        self.assertIn("telegram:555 | 🤖 MODEL | Ответ модели", conversation)
+        self.assertIn("Operational event", operational)
+        self.assertNotIn("USER |", operational)
+        self.assertNotIn("MODEL |", operational)
 
     def test_close_logging_removes_handlers(self):
         configure_logging(self.log_path)

@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
+import threading
+from types import SimpleNamespace
 
 from flask import Flask, jsonify, render_template, request
 
+from app_logging import configure_logging, flatten_text, get_logger, log_conversation
 from config import load_env_file
 from database import (
     DatabaseError,
@@ -17,10 +20,13 @@ from whatsapp_client import WhatsAppError, send_text_message
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PATH = PROJECT_ROOT / "data" / "sales_agent.db"
+LOG_PATH = PROJECT_ROOT / "data" / "logs" / "sales_agent.log"
+CONVERSATION_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "conversations.log"
 PRIVATE_ENV_PATH = PROJECT_ROOT / ".private" / "meta-whatsapp" / "credentials.env"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
 MAX_MANUAL_MESSAGE_LENGTH = 4000
+logger = get_logger("admin")
 
 
 class AdminDashboardError(RuntimeError):
@@ -80,6 +86,12 @@ def create_admin_app(database_path, send_fn):
         except (DatabaseError, TelegramError, WhatsAppError):
             return jsonify({"error": "Message could not be sent."}), 502
 
+        log_conversation(session_id, "MANUAL", flatten_text(text))
+        logger.info(
+            "📨 Manual reply delivered | session=%s chars=%d",
+            session_id,
+            len(text),
+        )
         return jsonify({"id": message_id, "status": "sent"}), 201
 
     @app.errorhandler(DatabaseError)
@@ -131,19 +143,55 @@ def require_setting(name):
     return value
 
 
+def build_admin_channel(
+    database_path,
+    host=DEFAULT_HOST,
+    port=DEFAULT_PORT,
+):
+    sender = build_channel_sender()
+    app = create_admin_app(database_path, sender)
+
+    def run():
+        logger.info("Admin dashboard serving | url=http://%s:%d", host, port)
+        app.run(
+            host=host,
+            port=port,
+            threaded=True,
+            use_reloader=False,
+        )
+
+    def start():
+        thread = threading.Thread(target=run, name="admin-dashboard", daemon=True)
+        thread.start()
+        return thread
+
+    def stop():
+        logger.info("Admin dashboard stops with the process")
+
+    def shutdown():
+        return None
+
+    return SimpleNamespace(
+        name="admin",
+        run=run,
+        start=start,
+        stop=stop,
+        shutdown=shutdown,
+    )
+
+
 def main():
     load_env_file(PROJECT_ROOT / ".env")
     load_env_file(PRIVATE_ENV_PATH)
+    configure_logging(LOG_PATH, CONVERSATION_LOG_PATH)
     initialize_database(DATABASE_PATH)
 
-    app = create_admin_app(DATABASE_PATH, build_channel_sender())
-    print(f"Admin dashboard: http://{DEFAULT_HOST}:{DEFAULT_PORT}")
-    app.run(
-        host=DEFAULT_HOST,
-        port=DEFAULT_PORT,
-        threaded=True,
-        use_reloader=False,
-    )
+    channel = build_admin_channel(DATABASE_PATH)
+
+    try:
+        channel.run()
+    except KeyboardInterrupt:
+        logger.info("🛑 Admin dashboard stopped")
 
 
 if __name__ == "__main__":

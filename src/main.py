@@ -4,6 +4,7 @@ from pathlib import Path
 import requests
 
 from agent import AgentError
+from app_logging import configure_logging
 from config import load_env_file
 from database import (
     DatabaseError,
@@ -15,9 +16,14 @@ from database import (
 from message_service import reply_to_customer
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
+from reply_delivery import deliver_agent_reply
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "sales_agent.db"
+LOG_PATH = Path(__file__).resolve().parents[1] / "data" / "logs" / "sales_agent.log"
+CONVERSATION_LOG_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "logs" / "conversations.log"
+)
 
 
 def get_settings():
@@ -35,6 +41,7 @@ def get_settings():
 
 def main():
     load_env_file()
+    configure_logging(LOG_PATH, CONVERSATION_LOG_PATH)
     api_key, model = get_settings()
     session_id = "terminal:default"
 
@@ -128,9 +135,13 @@ def main():
             print(f"Agent error: {error}")
             continue
 
-        print(f"Agent: {reply.customer_reply}")
-        if reply.operator_message is not None:
-            print(f"Operator request: {reply.operator_message}")
+        deliver_agent_reply(
+            session_id,
+            session_id,
+            reply,
+            lambda _destination, text: print(f"Agent: {text}"),
+            lambda _session_id, message: print(f"Operator request: {message}"),
+        )
 
 
 if __name__ == "__main__":
