@@ -10,14 +10,34 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 from telegram_bot import (
     MAX_MESSAGE_LENGTH,
     TelegramError,
+    deliver_agent_reply,
     get_updates,
     handle_update,
     send_message,
     split_message,
 )
+from agent_reply import AgentReply
 
 
 class TelegramBotTests(unittest.TestCase):
+    def test_delivers_customer_and_operator_messages_separately(self):
+        customer_messages = []
+        operator_messages = []
+
+        deliver_agent_reply(
+            123,
+            "telegram:123",
+            AgentReply("Customer text", "Operator summary"),
+            lambda chat_id, text: customer_messages.append((chat_id, text)),
+            lambda session_id, text: operator_messages.append((session_id, text)),
+        )
+
+        self.assertEqual(customer_messages, [(123, "Customer text")])
+        self.assertEqual(
+            operator_messages,
+            [("telegram:123", "Operator summary")],
+        )
+
     def test_regular_message_uses_a_separate_telegram_session(self):
         submissions = []
         sent = []

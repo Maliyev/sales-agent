@@ -15,6 +15,11 @@
 - [x] Answer several customer sessions concurrently.
 - [x] Add a simple Telegram demo with `/reset`.
 - [x] Block sessions that send more than 15 messages in one minute.
+- [x] Let the agent explicitly request a human operator.
 - [ ] Add Telegram access control and safer error reporting.
 - [ ] Add a website chat.
-- [ ] Add WhatsApp Cloud API.
+- [x] Build the local WhatsApp Cloud API connector.
+- [x] Verify the WhatsApp connector with a registered number and public tunnel.
+- [ ] Deploy the WhatsApp webhook to a permanent HTTPS host.
+- [x] Add readable rotating application logs.
+- [ ] Add a local admin dashboard for sessions and usage statistics.

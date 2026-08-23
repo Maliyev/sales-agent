@@ -2,6 +2,8 @@ import json
 import re
 from urllib.parse import urlparse
 
+from agent_reply import AgentReply
+from app_logging import log_conversation
 from gemini import generate_content, get_function_call, get_text_response
 from product_parser import get_product_data
 from product_search import search_products
@@ -9,8 +11,30 @@ from product_search import search_products
 
 MAX_SEARCH_RESULTS = 30
 MAX_SELECTED_PRODUCTS = 10
+MAX_CUSTOMER_REPLY_LENGTH = 4000
+MAX_OPERATOR_MESSAGE_LENGTH = 2000
+MAX_CONVERSATION_TITLES = 10
 
-SEARCH_TOOL = [
+REQUEST_OPERATOR_DECLARATION = {
+    "name": "request_operator",
+    "description": "Refer the customer to a human operator when required.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "customer_reply": {
+                "type": "STRING",
+                "description": "The final reply that will be sent to the customer.",
+            },
+            "operator_message": {
+                "type": "STRING",
+                "description": "A short useful summary for the human operator.",
+            },
+        },
+        "required": ["customer_reply", "operator_message"],
+    },
+}
+
+AGENT_TOOLS = [
     {
         "functionDeclarations": [
             {
@@ -26,10 +50,13 @@ SEARCH_TOOL = [
                     },
                     "required": ["query"],
                 },
-            }
+            },
+            REQUEST_OPERATOR_DECLARATION,
         ]
     }
 ]
+
+OPERATOR_TOOL = [{"functionDeclarations": [REQUEST_OPERATOR_DECLARATION]}]
 
 SELECTION_TOOL = [
     {
@@ -88,10 +115,16 @@ def get_agent_reply(
     search_fn=search_products,
     product_data_fn=get_product_data,
     generate_fn=generate_content,
+    session_id=None,
 ):
     current_history = _with_user_message(history, user_text)
     product_urls = _extract_product_urls(user_text)
     if product_urls:
+        _log_step(
+            session_id,
+            "DIRECT_LINKS",
+            f"count={len(product_urls)} | {'; '.join(product_urls)}",
+        )
         selected_products = [product_data_fn(url) for url in product_urls]
         return _create_final_reply(
             history,
@@ -111,19 +144,31 @@ def get_agent_reply(
         model,
         api_key,
         system_instruction,
-        tools=SEARCH_TOOL,
+        tools=AGENT_TOOLS,
     )
 
     search_call = get_function_call(decision, "search_products")
+    operator_call = get_function_call(decision, "request_operator")
+    if search_call is not None and operator_call is not None:
+        raise AgentError("Gemini requested search and operator at the same time.")
+    if operator_call is not None:
+        _log_step(session_id, "DECISION", "operator requested")
+        return _read_operator_request(operator_call)
     if search_call is None:
         unexpected_call = get_function_call(decision)
         if unexpected_call is not None:
             raise AgentError("Gemini requested an unknown tool.")
-        return get_text_response(decision)
+        return AgentReply(get_text_response(decision))
 
     query = _get_search_query(search_call)
+    _log_step(session_id, "DECISION", f"search query='{query}'")
     search_results = search_fn(query, max_results=MAX_SEARCH_RESULTS)
     candidates, candidates_by_id = _number_candidates(search_results)
+    _log_step(
+        session_id,
+        "FOUND",
+        f"query='{query}' found={len(candidates)} | {_describe_titles(candidates_by_id)}",
+    )
 
     if not candidates:
         return _create_final_reply(
@@ -160,6 +205,16 @@ def get_agent_reply(
     selected_ids, needs_clarification, clarifying_question = _read_selection(
         selection_call,
         candidates_by_id,
+    )
+    _log_step(
+        session_id,
+        "SELECTED",
+        _describe_selection(
+            selected_ids,
+            candidates_by_id,
+            needs_clarification,
+            clarifying_question,
+        ),
     )
     selected_products = [
         product_data_fn(candidates_by_id[candidate_id]["url"])
@@ -208,8 +263,16 @@ def _create_final_reply(
         model,
         api_key,
         f"{system_instruction}\n\n{response_instruction}",
+        tools=OPERATOR_TOOL,
     )
-    return get_text_response(response)
+    operator_call = get_function_call(response, "request_operator")
+    if operator_call is not None:
+        return _read_operator_request(operator_call)
+
+    unexpected_call = get_function_call(response)
+    if unexpected_call is not None:
+        raise AgentError("Gemini requested an unknown tool.")
+    return AgentReply(get_text_response(response))
 
 
 def _with_user_message(history, user_text):
@@ -254,6 +317,64 @@ def _get_search_query(function_call):
     if len(query) > 30:
         raise AgentError("Gemini returned a product search query over 30 characters.")
     return query
+
+
+def _read_operator_request(function_call):
+    args = function_call.get("args")
+    if not isinstance(args, dict):
+        raise AgentError("Gemini returned an invalid operator request.")
+
+    customer_reply = args.get("customer_reply")
+    operator_message = args.get("operator_message")
+    if not isinstance(customer_reply, str) or not customer_reply.strip():
+        raise AgentError("Gemini returned an empty customer reply.")
+    if not isinstance(operator_message, str) or not operator_message.strip():
+        raise AgentError("Gemini returned an empty operator message.")
+
+    customer_reply = customer_reply.strip()
+    operator_message = operator_message.strip()
+    if len(customer_reply) > MAX_CUSTOMER_REPLY_LENGTH:
+        raise AgentError("Gemini returned a customer reply that is too long.")
+    if len(operator_message) > MAX_OPERATOR_MESSAGE_LENGTH:
+        raise AgentError("Gemini returned an operator message that is too long.")
+
+    return AgentReply(customer_reply, operator_message)
+
+
+def _log_step(session_id, event, detail):
+    if session_id is None:
+        return
+    log_conversation(session_id, event, detail)
+
+
+def _describe_titles(candidates_by_id):
+    titles = [
+        candidate["title"].strip()
+        for candidate in candidates_by_id.values()
+        if isinstance(candidate.get("title"), str) and candidate["title"].strip()
+    ]
+    shown = titles[:MAX_CONVERSATION_TITLES]
+    detail = "; ".join(shown)
+    hidden = len(titles) - len(shown)
+    if hidden > 0:
+        detail = f"{detail}; … ещё {hidden}"
+    return detail
+
+
+def _describe_selection(
+    selected_ids,
+    candidates_by_id,
+    needs_clarification,
+    clarifying_question,
+):
+    titles = [
+        str(candidates_by_id[candidate_id].get("title"))
+        for candidate_id in selected_ids
+    ]
+    detail = f"ids={selected_ids} | {'; '.join(titles)}"
+    if needs_clarification:
+        detail = f"{detail} | needs_clarification question='{clarifying_question}'"
+    return detail
 
 
 def _number_candidates(search_results):

@@ -6,11 +6,15 @@ from unittest.mock import patch
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from message_service import generate_customer_reply, reply_to_customer
+from agent_reply import AgentReply
 
 
 class MessageServiceTests(unittest.TestCase):
     @patch("message_service.save_exchange")
-    @patch("message_service.get_agent_reply", return_value="Draft reply")
+    @patch(
+        "message_service.get_agent_reply",
+        return_value=AgentReply("Draft reply"),
+    )
     @patch("message_service.load_history", return_value=[])
     def test_generates_a_reply_without_saving_it(
         self,
@@ -29,13 +33,16 @@ class MessageServiceTests(unittest.TestCase):
             "response",
         )
 
-        self.assertEqual(reply, "Draft reply")
+        self.assertEqual(reply, AgentReply("Draft reply"))
         load_history.assert_called_once()
         get_agent_reply.assert_called_once()
         save_exchange.assert_not_called()
 
     @patch("message_service.save_exchange")
-    @patch("message_service.get_agent_reply", return_value="Agent reply")
+    @patch(
+        "message_service.get_agent_reply",
+        return_value=AgentReply("Agent reply", "Operator summary"),
+    )
     @patch("message_service.load_history", return_value=[{"role": "user"}])
     def test_loads_history_and_saves_only_the_final_exchange(
         self,
@@ -54,7 +61,7 @@ class MessageServiceTests(unittest.TestCase):
             "response",
         )
 
-        self.assertEqual(reply, "Agent reply")
+        self.assertEqual(reply, AgentReply("Agent reply", "Operator summary"))
         load_history.assert_called_once_with("database.db", "telegram:123")
         get_agent_reply.assert_called_once()
         save_exchange.assert_called_once_with(

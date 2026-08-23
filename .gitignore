@@ -1,4 +1,5 @@
 .env
+.private/
 .venv/
 __pycache__/
 *.py[cod]
@@ -6,3 +7,7 @@ __pycache__/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/logs/
+data/runtime/
+data/test-temp-*/
+data/tmp*/
