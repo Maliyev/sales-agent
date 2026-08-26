@@ -7,60 +7,120 @@ class DatabaseError(RuntimeError):
     pass
 
 
-def initialize_database(database_path):
-    def create_tables(connection):
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('user', 'model')),
-                text TEXT NOT NULL,
-                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS messages_by_session
-            ON messages(session_id, id)
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recent_messages (
-                id INTEGER PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                received_at REAL NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS recent_messages_by_session
-            ON recent_messages(session_id, received_at)
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS blocked_sessions (
-                session_id TEXT PRIMARY KEY,
-                blocked_at REAL NOT NULL,
-                reason TEXT NOT NULL
-            )
-            """
-        )
+MESSAGE_STATUSES = (
+    "INITIALIZING",
+    "AWAITING_RESPONSE",
+    "AGENT_PROCESSING",
+    "RESPONSE_READY",
+    "DELIVERED",
+    "FAILED_LLM_API",
+    "FAILED_DELIVERY",
+    "FAILED_OTHER",
+)
 
-    run_database_operation(database_path, create_tables)
+MESSAGE_STATUS_CHECK = ", ".join(repr(status) for status in MESSAGE_STATUSES)
+
+
+def migration_001_initial_schema(connection):
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            channel TEXT NOT NULL DEFAULT 'unknown',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            role TEXT NOT NULL CHECK(role IN ('user', 'model', 'operator', 'tool')),
+            text TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+            status TEXT NOT NULL DEFAULT 'INITIALIZING' CHECK(status IN ({MESSAGE_STATUS_CHECK})),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS messages_by_session
+        ON messages(session_id, id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            message_id INTEGER NOT NULL REFERENCES messages(id),
+            tool_call_id TEXT,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT,
+            result_json TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'failed')),
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS tool_calls_by_message
+        ON tool_calls(message_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recent_messages (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            received_at REAL NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS recent_messages_by_session
+        ON recent_messages(session_id, received_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS blocked_sessions (
+            session_id TEXT PRIMARY KEY,
+            blocked_at REAL NOT NULL,
+            reason TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
+            message_id TEXT PRIMARY KEY,
+            sender_id TEXT NOT NULL,
+            received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+MIGRATIONS = (migration_001_initial_schema,)
+
+
+def initialize_database(database_path):
+    def apply_migrations(connection):
+        connection.execute("PRAGMA journal_mode = WAL")
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        for target_version, migration in enumerate(MIGRATIONS, start=1):
+            if target_version > version:
+                migration(connection)
+                connection.execute(f"PRAGMA user_version = {target_version}")
+
+    run_database_operation(database_path, apply_migrations)
 
 
 def create_session(database_path, session_id):
@@ -83,7 +143,7 @@ def load_history(database_path, session_id):
             """
             SELECT role, text
             FROM messages
-            WHERE session_id = ?
+            WHERE session_id = ? AND archived = 0
             ORDER BY id
             """,
             (session_id,),
@@ -107,7 +167,10 @@ def save_exchange(database_path, session_id, user_text, model_text):
             (session_id,),
         )
         connection.executemany(
-            "INSERT INTO messages (session_id, role, text) VALUES (?, ?, ?)",
+            """
+            INSERT INTO messages (session_id, role, text, status)
+            VALUES (?, ?, ?, 'DELIVERED')
+            """,
             [
                 (session_id, "user", user_text),
                 (session_id, "model", model_text),
@@ -140,6 +203,8 @@ def list_sessions(database_path):
                     SELECT latest.role
                     FROM messages AS latest
                     WHERE latest.session_id = sessions.session_id
+                      AND latest.archived = 0
+                      AND latest.role != 'tool'
                     ORDER BY latest.id DESC
                     LIMIT 1
                 ) AS last_role,
@@ -147,11 +212,16 @@ def list_sessions(database_path):
                     SELECT latest.text
                     FROM messages AS latest
                     WHERE latest.session_id = sessions.session_id
+                      AND latest.archived = 0
+                      AND latest.role != 'tool'
                     ORDER BY latest.id DESC
                     LIMIT 1
                 ) AS last_text
             FROM sessions
-            LEFT JOIN messages ON messages.session_id = sessions.session_id
+            LEFT JOIN messages
+                ON messages.session_id = sessions.session_id
+                AND messages.archived = 0
+                AND messages.role != 'tool'
             GROUP BY sessions.session_id, sessions.created_at
             ORDER BY COALESCE(MAX(messages.id), 0) DESC, sessions.created_at DESC
             """
@@ -169,7 +239,7 @@ def load_session_messages(database_path, session_id):
             """
             SELECT id, role, text
             FROM messages
-            WHERE session_id = ?
+            WHERE session_id = ? AND archived = 0
             ORDER BY id
             """,
             (session_id,),
@@ -189,7 +259,10 @@ def save_model_message(database_path, session_id, text):
             (session_id,),
         )
         cursor = connection.execute(
-            "INSERT INTO messages (session_id, role, text) VALUES (?, 'model', ?)",
+            """
+            INSERT INTO messages (session_id, role, text, status)
+            VALUES (?, 'model', ?, 'DELIVERED')
+            """,
             (session_id, text),
         )
         return cursor.lastrowid
@@ -200,13 +273,17 @@ def save_model_message(database_path, session_id, text):
 def reset_history(database_path, session_id):
     session_id = validate_session_id(session_id)
 
-    def delete_messages(connection):
+    def archive_messages(connection):
         connection.execute(
-            "DELETE FROM messages WHERE session_id = ?",
+            """
+            UPDATE messages
+            SET archived = 1
+            WHERE session_id = ? AND archived = 0
+            """,
             (session_id,),
         )
 
-    run_database_operation(database_path, delete_messages)
+    run_database_operation(database_path, archive_messages)
 
 
 def record_incoming_message(

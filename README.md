@@ -173,6 +173,39 @@ Do not run `src/runner.py` and a standalone bot for the same channel at the
 same time: two Telegram pollers would steal updates from each other, and the
 WhatsApp port 8000 can only be bound by one process.
 
+## Database
+
+All data lives in one SQLite file: `data/sales_agent.db`. The schema is created
+and upgraded by numbered migrations in `src/database.py`. The applied version is
+stored in SQLite's `user_version` pragma, so starting the program on an older
+file applies only the missing migration steps.
+
+Current tables:
+
+- `sessions` — one row per conversation (`telegram:123`, `whatsapp:994…`) with
+  a `channel` column.
+- `messages` — every stored message with `role` (`user`, `model`, `operator`,
+  `tool`), an `archived` flag, a lifecycle `status`, and a `created_at`
+  timestamp.
+- `tool_calls` — full details of agent tool calls (arguments, result, error,
+  timing), linked to their lightweight `messages` row through `message_id`.
+- `recent_messages` and `blocked_sessions` — the spam rate limiter.
+- `whatsapp_inbound_messages` — webhook deduplication.
+
+`/reset` deletes nothing: it marks the session's messages as `archived = 1`,
+so the working context becomes empty while the full history stays in the file
+for analytics and future export.
+
+Message `status` values: `INITIALIZING`, `AWAITING_RESPONSE`,
+`AGENT_PROCESSING`, `RESPONSE_READY`, `DELIVERED`, and three failure states:
+`FAILED_LLM_API` (the Gemini request failed), `FAILED_DELIVERY` (the reply
+exists but could not be delivered), `FAILED_OTHER`. The current pipeline saves
+finished exchanges directly as `DELIVERED`; the intermediate states exist for
+the upcoming reply queue and offline backlog handling.
+
+The previous pre-migration file is kept untouched as
+`data/sales_agent_legacy.db`; the program no longer reads it.
+
 ## Local chat dashboard
 
 Run the local operator dashboard in a separate PowerShell window:
@@ -217,7 +250,8 @@ are included as plain text, with table rows kept on separate lines.
 - `src/agent.py` coordinates product search, selection, and the final answer.
 - `src/agent_reply.py` separates the customer reply from an operator request.
 - `src/chat.py` adds messages to a conversation history.
-- `src/database.py` saves and loads session histories from SQLite.
+- `src/database.py` owns the SQLite schema, runs its migrations, and handles
+  all conversation queries.
 - `src/prompts.py` builds the system instruction from Markdown files.
 - `src/config.py` loads local settings from `.env`.
 - `src/gemini.py` makes the HTTP request to Gemini.

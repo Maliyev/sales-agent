@@ -19,7 +19,6 @@ from whatsapp_client import WhatsAppError, send_text_message
 from whatsapp_server import WEBHOOK_PATH, create_webhook_app
 from whatsapp_store import (
     claim_incoming_message,
-    initialize_whatsapp_store,
     release_incoming_message,
 )
 from whatsapp_webhook import WhatsAppTextMessage
@@ -244,7 +243,6 @@ def main():
         configure_logging(LOG_PATH, CONVERSATION_LOG_PATH)
         settings = get_settings()
         initialize_database(DATABASE_PATH)
-        initialize_whatsapp_store(DATABASE_PATH)
         system_instruction, selection_instruction, response_instruction = (
             load_instructions()
         )

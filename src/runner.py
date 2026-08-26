@@ -12,7 +12,6 @@ from session_coordinator import SessionCoordinator
 from telegram_bot import build_telegram_channel
 from whatsapp_bot import build_whatsapp_channel
 from whatsapp_bot import get_settings as get_whatsapp_settings
-from whatsapp_store import initialize_whatsapp_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +53,6 @@ def main():
         api_key, model, telegram_token = get_common_settings()
         whatsapp_settings = get_whatsapp_settings()
         initialize_database(DATABASE_PATH)
-        initialize_whatsapp_store(DATABASE_PATH)
         system_instruction = load_system_instruction()
         selection_instruction = load_prompt_file("prompts/product_selection.md")
         response_instruction = load_prompt_file("prompts/product_response.md")

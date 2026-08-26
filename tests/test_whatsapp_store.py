@@ -8,23 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from whatsapp_store import (
     claim_incoming_message,
-    initialize_whatsapp_store,
     release_incoming_message,
 )
 
 
 class WhatsAppStoreTests(unittest.TestCase):
-    @patch("whatsapp_store.run_database_operation")
-    def test_creates_the_whatsapp_deduplication_table(self, run_operation):
-        connection = Mock()
-        run_operation.side_effect = lambda path, operation: operation(connection)
-
-        initialize_whatsapp_store("database.db")
-
-        sql = connection.execute.call_args.args[0]
-        self.assertIn("whatsapp_inbound_messages", sql)
-        self.assertIn("message_id TEXT PRIMARY KEY", sql)
-
     @patch("whatsapp_store.run_database_operation")
     def test_claims_a_new_message_only_once(self, run_operation):
         connection = Mock()
