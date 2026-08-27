@@ -24,6 +24,7 @@ class SessionCoordinator:
         self,
         generate_reply,
         save_exchange,
+        mark_delivery_result=None,
         max_workers=4,
         debounce_seconds=1.0,
         sleep_fn=time.sleep,
@@ -34,9 +35,12 @@ class SessionCoordinator:
             raise ValueError("max_workers must be a positive number.")
         if not isinstance(debounce_seconds, (int, float)) or debounce_seconds < 0:
             raise ValueError("debounce_seconds must not be negative.")
+        if mark_delivery_result is not None and not callable(mark_delivery_result):
+            raise ValueError("mark_delivery_result must be callable.")
 
         self.generate_reply = generate_reply
         self.save_exchange = save_exchange
+        self.mark_delivery_result = mark_delivery_result
         self.debounce_seconds = debounce_seconds
         self.sleep_fn = sleep_fn
         self.states = {}
@@ -109,6 +113,8 @@ class SessionCoordinator:
             return self.states[session_id]
 
     def _run_session(self, session_id, state):
+        saved_message_ids = None
+        delivered = False
         try:
             while True:
                 self.sleep_fn(self.debounce_seconds)
@@ -125,6 +131,8 @@ class SessionCoordinator:
                     reply_callback = state.reply_callback
 
                 restarted = False
+                saved_message_ids = None
+                delivered = False
 
                 while True:
                     combined_text = "\n".join(messages)
@@ -162,7 +170,11 @@ class SessionCoordinator:
                             )
                             continue
 
-                        self.save_exchange(session_id, combined_text, reply)
+                        saved_message_ids = self.save_exchange(
+                            session_id,
+                            combined_text,
+                            reply,
+                        )
 
                     logger.info(
                         "💾 Exchange saved | session=%s",
@@ -170,6 +182,20 @@ class SessionCoordinator:
                     )
 
                     reply_callback(reply)
+                    delivered = True
+
+                    if self.mark_delivery_result is not None and saved_message_ids:
+                        try:
+                            self.mark_delivery_result(
+                                session_id,
+                                list(saved_message_ids),
+                                True,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "⚠️ Could not mark messages delivered | session=%s",
+                                session_id,
+                            )
                     break
 
                 with state.lock:
@@ -182,6 +208,14 @@ class SessionCoordinator:
                 session_id,
                 type(error).__name__,
             )
+            if saved_message_ids and not delivered and self.mark_delivery_result is not None:
+                try:
+                    self.mark_delivery_result(session_id, list(saved_message_ids), False)
+                except Exception:
+                    logger.exception(
+                        "⚠️ Could not mark messages failed | session=%s",
+                        session_id,
+                    )
             with state.lock:
                 error_callback = state.error_callback
                 state.pending_messages.clear()

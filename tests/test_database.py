@@ -18,6 +18,7 @@ from database import (
     run_database_operation,
     save_exchange,
     save_model_message,
+    update_messages_status,
 )
 
 
@@ -91,6 +92,52 @@ class DatabaseSchemaTests(unittest.TestCase):
             ).fetchone()[0]
 
         self.assertEqual(channel, "unknown")
+
+    def test_saved_exchanges_can_start_as_response_ready_and_become_delivered(self):
+        user_id, model_id = save_exchange(
+            self.database_path,
+            "telegram:9",
+            "Hello",
+            "Hi",
+            status="RESPONSE_READY",
+        )
+        self.assertIsInstance(user_id, int)
+        self.assertIsInstance(model_id, int)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT id, status FROM messages ORDER BY id"
+            ).fetchall()
+        self.assertEqual(
+            rows,
+            [(user_id, "RESPONSE_READY"), (model_id, "RESPONSE_READY")],
+        )
+
+        update_messages_status(self.database_path, [user_id, model_id], "DELIVERED")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT status FROM messages ORDER BY id"
+            ).fetchall()
+        self.assertEqual(rows, [("DELIVERED",), ("DELIVERED",)])
+
+    def test_rejects_an_unknown_status_on_save_and_update(self):
+        self.assertRaises(
+            DatabaseError,
+            save_exchange,
+            self.database_path,
+            "telegram:1",
+            "Hello",
+            "Hi",
+            "WRONG",
+        )
+        self.assertRaises(
+            DatabaseError,
+            update_messages_status,
+            self.database_path,
+            [1],
+            "WRONG",
+        )
 
     def test_rejects_a_role_outside_the_allowed_set(self):
         def write_invalid_role():

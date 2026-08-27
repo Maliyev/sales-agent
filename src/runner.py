@@ -5,7 +5,12 @@ import threading
 from admin_dashboard import build_admin_channel
 from app_logging import configure_logging, get_logger
 from config import load_env_file
-from database import DatabaseError, initialize_database, save_exchange
+from database import (
+    DatabaseError,
+    initialize_database,
+    save_exchange,
+    update_messages_status,
+)
 from message_service import generate_customer_reply
 from prompts import load_prompt_file, load_system_instruction
 from session_coordinator import SessionCoordinator
@@ -73,11 +78,25 @@ def main():
         )
 
     def save_reply(session_id, user_text, reply):
-        save_exchange(DATABASE_PATH, session_id, user_text, reply.customer_reply)
+        return save_exchange(
+            DATABASE_PATH,
+            session_id,
+            user_text,
+            reply.customer_reply,
+            status="RESPONSE_READY",
+        )
+
+    def mark_delivery_result(session_id, message_ids, delivered):
+        update_messages_status(
+            DATABASE_PATH,
+            message_ids,
+            "DELIVERED" if delivered else "FAILED_DELIVERY",
+        )
 
     coordinator = SessionCoordinator(
         create_reply,
         save_reply,
+        mark_delivery_result=mark_delivery_result,
         max_workers=MAX_WORKERS,
     )
 

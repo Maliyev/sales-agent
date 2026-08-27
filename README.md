@@ -199,9 +199,11 @@ for analytics and future export.
 Message `status` values: `INITIALIZING`, `AWAITING_RESPONSE`,
 `AGENT_PROCESSING`, `RESPONSE_READY`, `DELIVERED`, and three failure states:
 `FAILED_LLM_API` (the Gemini request failed), `FAILED_DELIVERY` (the reply
-exists but could not be delivered), `FAILED_OTHER`. The current pipeline saves
-finished exchanges directly as `DELIVERED`; the intermediate states exist for
-the upcoming reply queue and offline backlog handling.
+exists but could not be delivered), `FAILED_OTHER`. Telegram and WhatsApp
+replies are saved as `RESPONSE_READY` and are marked `DELIVERED` only after
+the channel client confirms the send; a failed send marks them
+`FAILED_DELIVERY`. The remaining intermediate states exist for the upcoming
+reply queue and offline backlog handling.
 
 The previous pre-migration file is kept untouched as
 `data/sales_agent_legacy.db`; the program no longer reads it.

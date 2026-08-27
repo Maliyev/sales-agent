@@ -156,28 +156,42 @@ def load_history(database_path, session_id):
     return run_database_operation(database_path, read_messages)
 
 
-def save_exchange(database_path, session_id, user_text, model_text):
+def save_exchange(
+    database_path,
+    session_id,
+    user_text,
+    model_text,
+    status="DELIVERED",
+):
     session_id = validate_session_id(session_id)
     user_text = validate_message_text(user_text)
     model_text = validate_message_text(model_text)
+    if status not in MESSAGE_STATUSES:
+        raise DatabaseError("Unknown message status.")
 
     def add_exchange(connection):
         connection.execute(
             "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
             (session_id,),
         )
-        connection.executemany(
+        cursor = connection.execute(
             """
             INSERT INTO messages (session_id, role, text, status)
-            VALUES (?, ?, ?, 'DELIVERED')
+            VALUES (?, 'user', ?, ?)
             """,
-            [
-                (session_id, "user", user_text),
-                (session_id, "model", model_text),
-            ],
+            (session_id, user_text, status),
         )
+        user_message_id = cursor.lastrowid
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (session_id, role, text, status)
+            VALUES (?, 'model', ?, ?)
+            """,
+            (session_id, model_text, status),
+        )
+        return user_message_id, cursor.lastrowid
 
-    run_database_operation(database_path, add_exchange)
+    return run_database_operation(database_path, add_exchange)
 
 
 def list_session_ids(database_path):
@@ -268,6 +282,26 @@ def save_model_message(database_path, session_id, text):
         return cursor.lastrowid
 
     return run_database_operation(database_path, add_message)
+
+
+def update_messages_status(database_path, message_ids, status):
+    if status not in MESSAGE_STATUSES:
+        raise DatabaseError("Unknown message status.")
+    if not message_ids:
+        return
+    validated_ids = []
+    for message_id in message_ids:
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise DatabaseError("Message ID must be a number.")
+        validated_ids.append(message_id)
+
+    def update_status(connection):
+        connection.executemany(
+            "UPDATE messages SET status = ? WHERE id = ?",
+            [(status, message_id) for message_id in validated_ids],
+        )
+
+    run_database_operation(database_path, update_status)
 
 
 def reset_history(database_path, session_id):
