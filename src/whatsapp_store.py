@@ -5,21 +5,6 @@ MAX_MESSAGE_ID_LENGTH = 500
 MAX_SENDER_ID_LENGTH = 50
 
 
-def initialize_whatsapp_store(database_path):
-    def create_table(connection):
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
-                message_id TEXT PRIMARY KEY,
-                sender_id TEXT NOT NULL,
-                received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-
-    run_database_operation(database_path, create_table)
-
-
 def claim_incoming_message(database_path, message_id, sender_id):
     message_id = _validate_identifier(
         message_id,

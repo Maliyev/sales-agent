@@ -145,6 +145,80 @@ class SessionCoordinatorTests(unittest.TestCase):
         self.assertEqual(reset_calls, [True])
         self.assertEqual(saved, [])
         self.assertEqual(delivered, [])
+    def test_delivery_result_is_marked_after_successful_send(self):
+        marks = []
+        delivered = []
+
+        def save_exchange(session_id, text, reply):
+            return (11, 12)
+
+        coordinator = SessionCoordinator(
+            lambda session_id, text: "Reply",
+            save_exchange,
+            mark_delivery_result=lambda session_id, ids, ok: marks.append(
+                (session_id, ids, ok)
+            ),
+            max_workers=1,
+            debounce_seconds=0,
+        )
+
+        coordinator.submit("telegram:1", "Hi", delivered.append, self.fail)
+        coordinator.shutdown()
+
+        self.assertEqual(delivered, ["Reply"])
+        self.assertEqual(marks, [("telegram:1", [11, 12], True)])
+
+    def test_failed_delivery_is_recorded_and_reported(self):
+        marks = []
+        errors = []
+
+        def failing_callback(reply):
+            raise RuntimeError("send failed")
+
+        coordinator = SessionCoordinator(
+            lambda session_id, text: "Reply",
+            lambda session_id, text, reply: (21, 22),
+            mark_delivery_result=lambda session_id, ids, ok: marks.append(
+                (session_id, ids, ok)
+            ),
+            max_workers=1,
+            debounce_seconds=0,
+        )
+
+        coordinator.submit("telegram:1", "Hi", failing_callback, errors.append)
+        coordinator.shutdown()
+
+        self.assertEqual(marks, [("telegram:1", [21, 22], False)])
+        self.assertEqual(len(errors), 1)
+
+    def test_savers_without_message_ids_skip_the_delivery_mark(self):
+        marks = []
+        delivered = []
+
+        coordinator = SessionCoordinator(
+            lambda session_id, text: "Reply",
+            lambda session_id, text, reply: None,
+            mark_delivery_result=lambda session_id, ids, ok: marks.append(
+                (session_id, ids, ok)
+            ),
+            max_workers=1,
+            debounce_seconds=0,
+        )
+
+        coordinator.submit("telegram:1", "Hi", delivered.append, self.fail)
+        coordinator.shutdown()
+
+        self.assertEqual(delivered, ["Reply"])
+        self.assertEqual(marks, [])
+
+    def test_rejects_a_non_callable_delivery_marker(self):
+        self.assertRaises(
+            ValueError,
+            SessionCoordinator,
+            lambda session_id, text: "Reply",
+            lambda session_id, text, reply: None,
+            "not callable",
+        )
 
 
 if __name__ == "__main__":

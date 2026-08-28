@@ -5,14 +5,18 @@ import threading
 from admin_dashboard import build_admin_channel
 from app_logging import configure_logging, get_logger
 from config import load_env_file
-from database import DatabaseError, initialize_database, save_exchange
+from database import (
+    DatabaseError,
+    initialize_database,
+    save_exchange,
+    update_messages_status,
+)
 from message_service import generate_customer_reply
 from prompts import load_prompt_file, load_system_instruction
 from session_coordinator import SessionCoordinator
 from telegram_bot import build_telegram_channel
 from whatsapp_bot import build_whatsapp_channel
 from whatsapp_bot import get_settings as get_whatsapp_settings
-from whatsapp_store import initialize_whatsapp_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +58,6 @@ def main():
         api_key, model, telegram_token = get_common_settings()
         whatsapp_settings = get_whatsapp_settings()
         initialize_database(DATABASE_PATH)
-        initialize_whatsapp_store(DATABASE_PATH)
         system_instruction = load_system_instruction()
         selection_instruction = load_prompt_file("prompts/product_selection.md")
         response_instruction = load_prompt_file("prompts/product_response.md")
@@ -75,11 +78,25 @@ def main():
         )
 
     def save_reply(session_id, user_text, reply):
-        save_exchange(DATABASE_PATH, session_id, user_text, reply.customer_reply)
+        return save_exchange(
+            DATABASE_PATH,
+            session_id,
+            user_text,
+            reply.customer_reply,
+            status="RESPONSE_READY",
+        )
+
+    def mark_delivery_result(session_id, message_ids, delivered):
+        update_messages_status(
+            DATABASE_PATH,
+            message_ids,
+            "DELIVERED" if delivered else "FAILED_DELIVERY",
+        )
 
     coordinator = SessionCoordinator(
         create_reply,
         save_reply,
+        mark_delivery_result=mark_delivery_result,
         max_workers=MAX_WORKERS,
     )
 

@@ -8,7 +8,12 @@ import requests
 from agent import AgentError
 from app_logging import configure_logging, get_logger
 from config import load_env_file
-from database import DatabaseError, initialize_database, save_exchange
+from database import (
+    DatabaseError,
+    initialize_database,
+    save_exchange,
+    update_messages_status,
+)
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
@@ -19,7 +24,6 @@ from whatsapp_client import WhatsAppError, send_text_message
 from whatsapp_server import WEBHOOK_PATH, create_webhook_app
 from whatsapp_store import (
     claim_incoming_message,
-    initialize_whatsapp_store,
     release_incoming_message,
 )
 from whatsapp_webhook import WhatsAppTextMessage
@@ -124,12 +128,26 @@ def build_whatsapp_channel(
         )
 
     def save_reply(session_id, user_text, reply):
-        save_exchange(database_path, session_id, user_text, reply.customer_reply)
+        return save_exchange(
+            database_path,
+            session_id,
+            user_text,
+            reply.customer_reply,
+            status="RESPONSE_READY",
+        )
 
     if coordinator is None:
+        def mark_delivery_result(session_id, message_ids, delivered):
+            update_messages_status(
+                database_path,
+                message_ids,
+                "DELIVERED" if delivered else "FAILED_DELIVERY",
+            )
+
         coordinator = SessionCoordinator(
             create_reply,
             save_reply,
+            mark_delivery_result=mark_delivery_result,
             max_workers=max_workers,
         )
 
@@ -244,7 +262,6 @@ def main():
         configure_logging(LOG_PATH, CONVERSATION_LOG_PATH)
         settings = get_settings()
         initialize_database(DATABASE_PATH)
-        initialize_whatsapp_store(DATABASE_PATH)
         system_instruction, selection_instruction, response_instruction = (
             load_instructions()
         )
