@@ -9,15 +9,19 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from database import (
     DatabaseError,
+    block_session,
     create_session,
     initialize_database,
+    insert_incoming_message,
     list_sessions,
     load_history,
     load_session_messages,
+    record_api_call,
     reset_history,
     run_database_operation,
     save_exchange,
     save_model_message,
+    sum_tokens_in_window,
     update_messages_status,
 )
 
@@ -44,12 +48,32 @@ class DatabaseSchemaTests(unittest.TestCase):
                 "sessions",
                 "messages",
                 "tool_calls",
+                "api_calls",
                 "recent_messages",
                 "blocked_sessions",
                 "whatsapp_inbound_messages",
             },
             self.read_table_names(),
         )
+
+    def test_migration_adds_api_calls_to_an_older_database(self):
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("DROP TABLE api_calls")
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+
+        initialize_database(self.database_path)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertIn("api_calls", names)
+        self.assertEqual(version, 2)
 
     def test_reinitializing_an_up_to_date_database_changes_nothing(self):
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -63,8 +87,8 @@ class DatabaseSchemaTests(unittest.TestCase):
             version_after = connection.execute(
                 "PRAGMA user_version"
             ).fetchone()[0]
-        self.assertEqual(version_before, 1)
-        self.assertEqual(version_after, 1)
+        self.assertEqual(version_before, 2)
+        self.assertEqual(version_after, 2)
 
     def test_saved_exchanges_get_delivered_status_and_visible_by_default(self):
         save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
@@ -138,6 +162,81 @@ class DatabaseSchemaTests(unittest.TestCase):
             [1],
             "WRONG",
         )
+
+    def test_incoming_messages_start_as_initializing_and_hide_from_history(self):
+        insert_incoming_message(
+            self.database_path,
+            "telegram:5",
+            "Pending question",
+        )
+
+        history = load_history(self.database_path, "telegram:5")
+        stored = load_session_messages(self.database_path, "telegram:5")
+
+        self.assertEqual(history, [])
+        self.assertEqual([message["text"] for message in stored], ["Pending question"])
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT role, status FROM messages WHERE session_id = 'telegram:5'"
+            ).fetchall()
+        self.assertEqual(rows, [("user", "INITIALIZING")])
+
+    def test_api_calls_are_recorded_and_summed_per_window(self):
+        create_session(self.database_path, "telegram:6")
+        reply_to = insert_incoming_message(self.database_path, "telegram:6", "Hello")
+        record_api_call(
+            self.database_path,
+            "telegram:6",
+            None,
+            "decision",
+            "gemini-model",
+            prompt_tokens=100,
+            completion_tokens=20,
+            duration_ms=250,
+        )
+        record_api_call(
+            self.database_path,
+            "telegram:6",
+            reply_to,
+            "final",
+            "gemini-model",
+            prompt_tokens=50,
+            completion_tokens=30,
+        )
+
+        total = sum_tokens_in_window(self.database_path, 60)
+        per_session = sum_tokens_in_window(
+            self.database_path,
+            60,
+            session_id="telegram:6",
+        )
+        other = sum_tokens_in_window(self.database_path, 60, session_id="telegram:9")
+
+        self.assertEqual(total, 200)
+        self.assertEqual(per_session, 200)
+        self.assertEqual(other, 0)
+
+    def test_the_token_window_ignores_old_calls(self):
+        create_session(self.database_path, "telegram:6")
+        record_api_call(self.database_path, "telegram:6", None, "final", "gemini-model")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("UPDATE api_calls SET created_at = '2020-01-01 00:00:00'")
+            connection.commit()
+
+        self.assertEqual(sum_tokens_in_window(self.database_path, 60), 0)
+
+    def test_block_session_is_idempotent(self):
+        block_session(self.database_path, "telegram:7", "Token abuse")
+        block_session(self.database_path, "telegram:7", "Token abuse again")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT session_id, reason FROM blocked_sessions"
+            ).fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "telegram:7")
 
     def test_rejects_a_role_outside_the_allowed_set(self):
         def write_invalid_role():

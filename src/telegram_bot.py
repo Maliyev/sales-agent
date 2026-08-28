@@ -8,13 +8,15 @@ from types import SimpleNamespace
 import requests
 
 from agent import AgentError
+from app_config import get_gemini_model
 from app_logging import configure_logging, get_logger
 from config import load_env_file
 from database import (
     DatabaseError,
     initialize_database,
+    insert_incoming_message,
     reset_history,
-    save_exchange,
+    save_model_message,
     update_messages_status,
 )
 from message_guard import is_message_allowed
@@ -182,7 +184,7 @@ def build_telegram_channel(
     coordinator=None,
     max_workers=4,
 ):
-    def create_reply(session_id, user_text):
+    def create_reply(session_id, user_text, in_reply_to_message_id):
         return generate_customer_reply(
             database_path,
             session_id,
@@ -192,29 +194,25 @@ def build_telegram_channel(
             system_instruction,
             selection_instruction,
             response_instruction,
+            in_reply_to_message_id=in_reply_to_message_id,
         )
 
-    def save_reply(session_id, user_text, reply):
-        return save_exchange(
+    def save_reply(session_id, reply):
+        return save_model_message(
             database_path,
             session_id,
-            user_text,
             reply.customer_reply,
             status="RESPONSE_READY",
         )
 
     if coordinator is None:
-        def mark_delivery_result(session_id, message_ids, delivered):
-            update_messages_status(
-                database_path,
-                message_ids,
-                "DELIVERED" if delivered else "FAILED_DELIVERY",
-            )
+        def mark_messages_status(session_id, message_ids, status):
+            update_messages_status(database_path, message_ids, status)
 
         coordinator = SessionCoordinator(
             create_reply,
             save_reply,
-            mark_delivery_result=mark_delivery_result,
+            mark_messages_status=mark_messages_status,
             max_workers=max_workers,
         )
 
@@ -244,8 +242,20 @@ def build_telegram_channel(
             logger.error("❌ Could not send Telegram error message: %s", send_error)
 
     def submit_message(session_id, user_text, chat_id):
+        try:
+            message_id = insert_incoming_message(database_path, session_id, user_text)
+        except DatabaseError as error:
+            logger.error(
+                "❌ Could not store the message | session=%s error=%s",
+                session_id,
+                error,
+            )
+            report_error(chat_id, error)
+            return
+
         coordinator.submit(
             session_id,
+            message_id,
             user_text,
             lambda reply: deliver_agent_reply(
                 chat_id,
@@ -299,17 +309,14 @@ def build_telegram_channel(
 
 def get_settings():
     api_key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is missing. Add it to the .env file.")
-    if not model:
-        raise RuntimeError("GEMINI_MODEL is missing. Add it to the .env file.")
     if not telegram_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Add it to the .env file.")
 
-    return api_key, model, telegram_token
+    return api_key, get_gemini_model(), telegram_token
 
 
 def load_instructions():

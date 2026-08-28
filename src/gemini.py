@@ -48,6 +48,21 @@ def get_model_reply(history, model, api_key, system_instruction, timeout=60):
     return get_text_response(data)
 
 
+def get_usage_metadata(data):
+    usage = data.get("usageMetadata") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+
+    prompt_tokens = usage.get("promptTokenCount")
+    completion_tokens = usage.get("candidatesTokenCount")
+    return {
+        "prompt_tokens": prompt_tokens if isinstance(prompt_tokens, int) else 0,
+        "completion_tokens": (
+            completion_tokens if isinstance(completion_tokens, int) else 0
+        ),
+    }
+
+
 def get_text_response(data):
     parts = _get_response_parts(data)
     text_parts = [part["text"] for part in parts if isinstance(part.get("text"), str)]

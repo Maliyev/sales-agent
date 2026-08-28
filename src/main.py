@@ -4,6 +4,7 @@ from pathlib import Path
 import requests
 
 from agent import AgentError
+from app_config import get_gemini_model
 from app_logging import configure_logging
 from config import load_env_file
 from database import (
@@ -12,6 +13,7 @@ from database import (
     initialize_database,
     list_session_ids,
     reset_history,
+    update_messages_status,
 )
 from message_service import reply_to_customer
 from product_search import ProductSearchError
@@ -28,15 +30,11 @@ CONVERSATION_LOG_PATH = (
 
 def get_settings():
     api_key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL")
 
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is missing. Add it to the .env file.")
 
-    if not model:
-        raise RuntimeError("GEMINI_MODEL is missing. Add it to the .env file.")
-
-    return api_key, model
+    return api_key, get_gemini_model()
 
 
 def main():
@@ -112,7 +110,7 @@ def main():
             continue
 
         try:
-            reply = reply_to_customer(
+            reply, message_ids = reply_to_customer(
                 DATABASE_PATH,
                 session_id,
                 user_text,
@@ -135,13 +133,20 @@ def main():
             print(f"Agent error: {error}")
             continue
 
-        deliver_agent_reply(
-            session_id,
-            session_id,
-            reply,
-            lambda _destination, text: print(f"Agent: {text}"),
-            lambda _session_id, message: print(f"Operator request: {message}"),
-        )
+        try:
+            deliver_agent_reply(
+                session_id,
+                session_id,
+                reply,
+                lambda _destination, text: print(f"Agent: {text}"),
+                lambda _session_id, message: print(f"Operator request: {message}"),
+            )
+        except Exception as error:
+            print(f"Delivery failed: {error}")
+            update_messages_status(DATABASE_PATH, message_ids, "FAILED_DELIVERY")
+            continue
+
+        update_messages_status(DATABASE_PATH, message_ids, "DELIVERED")
 
 
 if __name__ == "__main__":

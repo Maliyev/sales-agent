@@ -1,12 +1,24 @@
 import json
 import re
+import time
 from urllib.parse import urlparse
 
 from agent_reply import AgentReply
-from app_logging import log_conversation
-from gemini import generate_content, get_function_call, get_text_response
+from app_logging import get_logger, log_conversation
+from database import DatabaseError, record_api_call
+from gemini import (
+    CHARACTERS_PER_TOKEN,
+    generate_content,
+    get_function_call,
+    get_text_response,
+    get_usage_metadata,
+)
 from product_parser import get_product_data
 from product_search import search_products
+from token_limiter import guard_session_consumption, wait_for_token_budget
+
+
+logger = get_logger("agent")
 
 
 MAX_SEARCH_RESULTS = 30
@@ -115,8 +127,36 @@ def get_agent_reply(
     search_fn=search_products,
     product_data_fn=get_product_data,
     generate_fn=generate_content,
+    usage_fn=None,
     session_id=None,
+    database_path=None,
+    in_reply_to_message_id=None,
 ):
+    call_decision = _build_model_call(
+        generate_fn,
+        usage_fn,
+        database_path,
+        in_reply_to_message_id,
+        session_id,
+        "decision",
+    )
+    call_selection = _build_model_call(
+        generate_fn,
+        usage_fn,
+        database_path,
+        in_reply_to_message_id,
+        session_id,
+        "selection",
+    )
+    call_final = _build_model_call(
+        generate_fn,
+        usage_fn,
+        database_path,
+        in_reply_to_message_id,
+        session_id,
+        "final",
+    )
+
     current_history = _with_user_message(history, user_text)
     product_urls = _extract_product_urls(user_text)
     if product_urls:
@@ -136,10 +176,10 @@ def get_agent_reply(
             api_key,
             system_instruction,
             response_instruction,
-            generate_fn,
+            call_final,
         )
 
-    decision = generate_fn(
+    decision = call_decision(
         current_history,
         model,
         api_key,
@@ -190,7 +230,7 @@ def get_agent_reply(
         "Temporary search candidates",
         candidates,
     )
-    selection = generate_fn(
+    selection = call_selection(
         selection_history,
         model,
         api_key,
@@ -231,8 +271,139 @@ def get_agent_reply(
         api_key,
         system_instruction,
         response_instruction,
-        generate_fn,
+        call_final,
     )
+
+
+def _build_model_call(
+    generate_fn,
+    usage_fn,
+    database_path,
+    in_reply_to_message_id,
+    session_id,
+    purpose,
+):
+    if database_path is None:
+        return generate_fn
+
+    def call_model(history, model_name, api_key, system_instruction, **kwargs):
+        estimated_tokens = _estimate_tokens(history, system_instruction)
+        wait_for_token_budget(database_path, estimated_tokens)
+
+        started_at = time.monotonic()
+        try:
+            data = generate_fn(
+                history,
+                model_name,
+                api_key,
+                system_instruction,
+                **kwargs,
+            )
+        except Exception as error:
+            duration_ms = round((time.monotonic() - started_at) * 1000)
+            _record_model_call(
+                database_path,
+                session_id,
+                in_reply_to_message_id,
+                purpose,
+                model_name,
+                duration_ms,
+                "failed",
+                _describe_error(error),
+            )
+            raise
+
+        duration_ms = round((time.monotonic() - started_at) * 1000)
+        usage = _read_usage(usage_fn, data)
+        _record_model_call(
+            database_path,
+            session_id,
+            in_reply_to_message_id,
+            purpose,
+            model_name,
+            duration_ms,
+            "ok",
+            None,
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+        )
+        guard_session_consumption(database_path, session_id)
+        return data
+
+    return call_model
+
+
+def _record_model_call(
+    database_path,
+    session_id,
+    in_reply_to_message_id,
+    purpose,
+    model_name,
+    duration_ms,
+    status,
+    error,
+    prompt_tokens=0,
+    completion_tokens=0,
+):
+    try:
+        record_api_call(
+            database_path,
+            session_id,
+            in_reply_to_message_id,
+            purpose,
+            model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            duration_ms=duration_ms,
+            status=status,
+            error=error,
+        )
+    except DatabaseError as record_error:
+        logger.warning(
+            "⚠️ Could not record the API call | session=%s error=%s",
+            session_id,
+            record_error,
+        )
+
+
+def _read_usage(usage_fn, data):
+    if usage_fn is None:
+        usage_fn = get_usage_metadata
+    try:
+        usage = usage_fn(data)
+    except Exception:
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+
+    return {
+        "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
+        "completion_tokens": _safe_int(usage.get("completion_tokens")),
+    }
+
+
+def _safe_int(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def _describe_error(error):
+    return f"{type(error).__name__}: {error}"[:300]
+
+
+def _estimate_tokens(history, system_instruction):
+    total_characters = len(system_instruction)
+    for message in history:
+        if not isinstance(message, dict):
+            continue
+        parts = message.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                total_characters += len(part["text"])
+    return total_characters // CHARACTERS_PER_TOKEN
 
 
 def _create_final_reply(
