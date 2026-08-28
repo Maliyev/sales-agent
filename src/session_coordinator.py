@@ -7,6 +7,12 @@ from app_logging import get_logger
 
 logger = get_logger("sessions")
 
+FAILURE_STATUS_BY_STAGE = {
+    "generate": "FAILED_LLM_API",
+    "save": "FAILED_OTHER",
+    "deliver": "FAILED_DELIVERY",
+}
+
 
 class SessionState:
     def __init__(self):
@@ -23,8 +29,8 @@ class SessionCoordinator:
     def __init__(
         self,
         generate_reply,
-        save_exchange,
-        mark_delivery_result=None,
+        save_reply,
+        mark_messages_status=None,
         max_workers=4,
         debounce_seconds=1.0,
         sleep_fn=time.sleep,
@@ -35,12 +41,12 @@ class SessionCoordinator:
             raise ValueError("max_workers must be a positive number.")
         if not isinstance(debounce_seconds, (int, float)) or debounce_seconds < 0:
             raise ValueError("debounce_seconds must not be negative.")
-        if mark_delivery_result is not None and not callable(mark_delivery_result):
-            raise ValueError("mark_delivery_result must be callable.")
+        if mark_messages_status is not None and not callable(mark_messages_status):
+            raise ValueError("mark_messages_status must be callable.")
 
         self.generate_reply = generate_reply
-        self.save_exchange = save_exchange
-        self.mark_delivery_result = mark_delivery_result
+        self.save_reply = save_reply
+        self.mark_messages_status = mark_messages_status
         self.debounce_seconds = debounce_seconds
         self.sleep_fn = sleep_fn
         self.states = {}
@@ -51,9 +57,11 @@ class SessionCoordinator:
         )
         self.closed = False
 
-    def submit(self, session_id, text, reply_callback, error_callback):
+    def submit(self, session_id, message_id, text, reply_callback, error_callback):
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must not be empty.")
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise ValueError("message_id must be a number.")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("message text must not be empty.")
         if not callable(reply_callback) or not callable(error_callback):
@@ -63,7 +71,7 @@ class SessionCoordinator:
         should_start = False
 
         with state.lock:
-            state.pending_messages.append(text.strip())
+            state.pending_messages.append((message_id, text.strip()))
             state.revision += 1
             state.reply_callback = reply_callback
             state.error_callback = error_callback
@@ -113,7 +121,8 @@ class SessionCoordinator:
             return self.states[session_id]
 
     def _run_session(self, session_id, state):
-        saved_message_ids = None
+        pending = []
+        stage = "generate"
         delivered = False
         try:
             while True:
@@ -124,26 +133,29 @@ class SessionCoordinator:
                         state.running = False
                         return
 
-                    messages = list(state.pending_messages)
+                    pending = list(state.pending_messages)
                     state.pending_messages.clear()
                     revision = state.revision
                     generation = state.generation
                     reply_callback = state.reply_callback
 
                 restarted = False
-                saved_message_ids = None
-                delivered = False
 
                 while True:
-                    combined_text = "\n".join(messages)
+                    combined_text = "\n".join(text for _message_id, text in pending)
+                    in_reply_to_message_id = pending[0][0]
                     started_at = time.monotonic()
                     logger.info(
                         "⏳ Reply generation started | session=%s messages=%d chars=%d",
                         session_id,
-                        len(messages),
+                        len(pending),
                         len(combined_text),
                     )
-                    reply = self.generate_reply(session_id, combined_text)
+                    reply = self.generate_reply(
+                        session_id,
+                        combined_text,
+                        in_reply_to_message_id,
+                    )
                     duration_ms = round((time.monotonic() - started_at) * 1000)
                     logger.info(
                         "✅ Reply generated | session=%s duration_ms=%d",
@@ -159,7 +171,7 @@ class SessionCoordinator:
                             state.revision != revision and state.pending_messages
                         )
                         if has_new_messages and not restarted:
-                            messages.extend(state.pending_messages)
+                            pending.extend(state.pending_messages)
                             state.pending_messages.clear()
                             revision = state.revision
                             reply_callback = state.reply_callback
@@ -170,32 +182,24 @@ class SessionCoordinator:
                             )
                             continue
 
-                        saved_message_ids = self.save_exchange(
-                            session_id,
-                            combined_text,
-                            reply,
-                        )
+                        stage = "save"
+                        saved_model_id = self.save_reply(session_id, reply)
 
                     logger.info(
-                        "💾 Exchange saved | session=%s",
+                        "💾 Reply saved | session=%s",
                         session_id,
                     )
 
+                    stage = "deliver"
                     reply_callback(reply)
                     delivered = True
 
-                    if self.mark_delivery_result is not None and saved_message_ids:
-                        try:
-                            self.mark_delivery_result(
-                                session_id,
-                                list(saved_message_ids),
-                                True,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "⚠️ Could not mark messages delivered | session=%s",
-                                session_id,
-                            )
+                    if self.mark_messages_status is not None:
+                        self._mark_safely(
+                            session_id,
+                            self._turn_message_ids(pending, saved_model_id),
+                            "DELIVERED",
+                        )
                     break
 
                 with state.lock:
@@ -208,14 +212,12 @@ class SessionCoordinator:
                 session_id,
                 type(error).__name__,
             )
-            if saved_message_ids and not delivered and self.mark_delivery_result is not None:
-                try:
-                    self.mark_delivery_result(session_id, list(saved_message_ids), False)
-                except Exception:
-                    logger.exception(
-                        "⚠️ Could not mark messages failed | session=%s",
-                        session_id,
-                    )
+            if pending and not delivered and self.mark_messages_status is not None:
+                self._mark_safely(
+                    session_id,
+                    self._turn_message_ids(pending, saved_model_id if stage == "deliver" else None),
+                    FAILURE_STATUS_BY_STAGE[stage],
+                )
             with state.lock:
                 error_callback = state.error_callback
                 state.pending_messages.clear()
@@ -223,3 +225,20 @@ class SessionCoordinator:
 
             if error_callback is not None:
                 error_callback(error)
+
+    @staticmethod
+    def _turn_message_ids(pending, saved_model_id):
+        message_ids = [message_id for message_id, _text in pending]
+        if saved_model_id is not None:
+            message_ids.append(saved_model_id)
+        return message_ids
+
+    def _mark_safely(self, session_id, message_ids, status):
+        try:
+            self.mark_messages_status(session_id, message_ids, status)
+        except Exception:
+            logger.exception(
+                "⚠️ Could not update message statuses | session=%s status=%s",
+                session_id,
+                status,
+            )

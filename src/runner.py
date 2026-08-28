@@ -3,12 +3,13 @@ from pathlib import Path
 import threading
 
 from admin_dashboard import build_admin_channel
+from app_config import get_gemini_model
 from app_logging import configure_logging, get_logger
 from config import load_env_file
 from database import (
     DatabaseError,
     initialize_database,
-    save_exchange,
+    save_model_message,
     update_messages_status,
 )
 from message_service import generate_customer_reply
@@ -31,14 +32,12 @@ logger = get_logger("runner")
 
 def get_common_settings():
     api_key = os.getenv("GEMINI_API_KEY")
-    model = os.getenv("GEMINI_MODEL")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
     missing = [
         name
         for name, value in (
             ("GEMINI_API_KEY", api_key),
-            ("GEMINI_MODEL", model),
             ("TELEGRAM_BOT_TOKEN", telegram_token),
         )
         if not value
@@ -46,7 +45,7 @@ def get_common_settings():
     if missing:
         raise RuntimeError(f"Missing settings: {', '.join(missing)}.")
 
-    return api_key, model, telegram_token
+    return api_key, get_gemini_model(), telegram_token
 
 
 def main():
@@ -65,7 +64,7 @@ def main():
         logger.exception("❌ Runner startup failed | error=%s", error)
         return
 
-    def create_reply(session_id, user_text):
+    def create_reply(session_id, user_text, in_reply_to_message_id):
         return generate_customer_reply(
             DATABASE_PATH,
             session_id,
@@ -75,28 +74,24 @@ def main():
             system_instruction,
             selection_instruction,
             response_instruction,
+            in_reply_to_message_id=in_reply_to_message_id,
         )
 
-    def save_reply(session_id, user_text, reply):
-        return save_exchange(
+    def save_reply(session_id, reply):
+        return save_model_message(
             DATABASE_PATH,
             session_id,
-            user_text,
             reply.customer_reply,
             status="RESPONSE_READY",
         )
 
-    def mark_delivery_result(session_id, message_ids, delivered):
-        update_messages_status(
-            DATABASE_PATH,
-            message_ids,
-            "DELIVERED" if delivered else "FAILED_DELIVERY",
-        )
+    def mark_messages_status(session_id, message_ids, status):
+        update_messages_status(DATABASE_PATH, message_ids, status)
 
     coordinator = SessionCoordinator(
         create_reply,
         save_reply,
-        mark_delivery_result=mark_delivery_result,
+        mark_messages_status=mark_messages_status,
         max_workers=MAX_WORKERS,
     )
 

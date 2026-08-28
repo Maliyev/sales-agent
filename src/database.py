@@ -1,5 +1,7 @@
 import math
 import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -108,7 +110,42 @@ def migration_001_initial_schema(connection):
     )
 
 
-MIGRATIONS = (migration_001_initial_schema,)
+def migration_002_api_calls(connection):
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_calls (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            in_reply_to_message_id INTEGER REFERENCES messages(id),
+            purpose TEXT NOT NULL CHECK(purpose IN ('decision', 'selection', 'final')),
+            model TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('ok', 'failed')),
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_session_time
+        ON api_calls(session_id, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_time
+        ON api_calls(created_at)
+        """
+    )
+
+
+MIGRATIONS = (
+    migration_001_initial_schema,
+    migration_002_api_calls,
+)
 
 
 def initialize_database(database_path):
@@ -143,7 +180,7 @@ def load_history(database_path, session_id):
             """
             SELECT role, text
             FROM messages
-            WHERE session_id = ? AND archived = 0
+            WHERE session_id = ? AND archived = 0 AND status != 'INITIALIZING'
             ORDER BY id
             """,
             (session_id,),
@@ -263,7 +300,7 @@ def load_session_messages(database_path, session_id):
     return run_database_operation(database_path, read_messages)
 
 
-def save_model_message(database_path, session_id, text):
+def insert_incoming_message(database_path, session_id, text):
     session_id = validate_session_id(session_id)
     text = validate_message_text(text)
 
@@ -275,9 +312,32 @@ def save_model_message(database_path, session_id, text):
         cursor = connection.execute(
             """
             INSERT INTO messages (session_id, role, text, status)
-            VALUES (?, 'model', ?, 'DELIVERED')
+            VALUES (?, 'user', ?, 'INITIALIZING')
             """,
             (session_id, text),
+        )
+        return cursor.lastrowid
+
+    return run_database_operation(database_path, add_message)
+
+
+def save_model_message(database_path, session_id, text, status="DELIVERED"):
+    session_id = validate_session_id(session_id)
+    text = validate_message_text(text)
+    if status not in MESSAGE_STATUSES:
+        raise DatabaseError("Unknown message status.")
+
+    def add_message(connection):
+        connection.execute(
+            "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)",
+            (session_id,),
+        )
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (session_id, role, text, status)
+            VALUES (?, 'model', ?, ?)
+            """,
+            (session_id, text, status),
         )
         return cursor.lastrowid
 
@@ -302,6 +362,121 @@ def update_messages_status(database_path, message_ids, status):
         )
 
     run_database_operation(database_path, update_status)
+
+
+def record_api_call(
+    database_path,
+    session_id,
+    in_reply_to_message_id,
+    purpose,
+    model,
+    prompt_tokens=0,
+    completion_tokens=0,
+    duration_ms=None,
+    status="ok",
+    error=None,
+):
+    session_id = validate_session_id(session_id)
+    if not isinstance(model, str) or not model.strip():
+        raise DatabaseError("Model name must not be empty.")
+    if status not in ("ok", "failed"):
+        raise DatabaseError("Unknown API call status.")
+    if duration_ms is not None and (
+        isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float))
+    ):
+        raise DatabaseError("Duration must be a number.")
+
+    def add_call(connection):
+        cursor = connection.execute(
+            """
+            INSERT INTO api_calls (
+                session_id,
+                in_reply_to_message_id,
+                purpose,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                duration_ms,
+                status,
+                error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                in_reply_to_message_id,
+                purpose,
+                model,
+                int(prompt_tokens or 0),
+                int(completion_tokens or 0),
+                int(duration_ms) if duration_ms is not None else None,
+                status,
+                error,
+            ),
+        )
+        return cursor.lastrowid
+
+    return run_database_operation(database_path, add_call)
+
+
+def sum_tokens_in_window(database_path, seconds, session_id=None, now=None):
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or seconds <= 0
+    ):
+        raise DatabaseError("Window must be a positive number of seconds.")
+
+    def read_sum(connection):
+        if now is not None:
+            reference = datetime.fromtimestamp(now, tz=timezone.utc)
+        else:
+            reference = datetime.now(tz=timezone.utc)
+        cutoff = (reference - timedelta(seconds=seconds)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        if session_id is None:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+                FROM api_calls
+                WHERE created_at >= ?
+                """,
+                (cutoff,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+                FROM api_calls
+                WHERE created_at >= ? AND session_id = ?
+                """,
+                (cutoff, session_id),
+            ).fetchone()
+        return row[0]
+
+    return run_database_operation(database_path, read_sum)
+
+
+def block_session(database_path, session_id, reason, blocked_at=None):
+    session_id = validate_session_id(session_id)
+    if not isinstance(reason, str) or not reason.strip():
+        raise DatabaseError("Block reason must not be empty.")
+    if blocked_at is None:
+        blocked_at = time.time()
+    if isinstance(blocked_at, bool) or not isinstance(blocked_at, (int, float)):
+        raise DatabaseError("Block time must be a number.")
+
+    def add_block(connection):
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO blocked_sessions (session_id, blocked_at, reason)
+            VALUES (?, ?, ?)
+            """,
+            (session_id, blocked_at, reason),
+        )
+
+    run_database_operation(database_path, add_block)
 
 
 def reset_history(database_path, session_id):

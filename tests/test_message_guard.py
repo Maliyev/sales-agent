@@ -5,6 +5,7 @@ import unittest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
+from app_config import set_config
 from database import initialize_database
 from message_guard import is_message_allowed
 
@@ -16,6 +17,7 @@ class MessageGuardTests(unittest.TestCase):
         initialize_database(self.database_path)
 
     def tearDown(self):
+        set_config(None)
         self.temp_folder.cleanup()
 
     def test_blocks_the_sixteenth_message_in_one_minute(self):
@@ -75,6 +77,21 @@ class MessageGuardTests(unittest.TestCase):
                 now=1061,
             )
         )
+
+    def test_custom_limits_come_from_the_config(self):
+        set_config(
+            {
+                "gemini": {"model": "gemini-model", "tpm_limit": 0},
+                "limits": {
+                    "message_rate": {"max_messages": 2, "window_seconds": 60},
+                    "token_abuse": {"limit": 0, "window_seconds": 60},
+                },
+            }
+        )
+
+        self.assertTrue(is_message_allowed(self.database_path, "telegram:cfg", now=1000))
+        self.assertTrue(is_message_allowed(self.database_path, "telegram:cfg", now=1001))
+        self.assertFalse(is_message_allowed(self.database_path, "telegram:cfg", now=1002))
 
 
 if __name__ == "__main__":

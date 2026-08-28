@@ -1,20 +1,19 @@
 import time
 
+from app_config import get_message_rate_limits
 from database import record_incoming_message
-
-
-MAX_MESSAGES = 15
-WINDOW_SECONDS = 60
 
 
 def is_message_allowed(database_path, session_id, now=None):
     if now is None:
         now = time.time()
 
+    max_messages, window_seconds = get_message_rate_limits()
+
     return record_incoming_message(
         database_path,
         session_id,
         now,
-        MAX_MESSAGES,
-        WINDOW_SECONDS,
+        max_messages,
+        window_seconds,
     )

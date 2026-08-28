@@ -1,11 +1,15 @@
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 import sys
+import tempfile
 import unittest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent import AgentError, get_agent_reply
 from agent_reply import AgentReply
+from database import initialize_database, insert_incoming_message
 
 
 def text_response(text):
@@ -380,6 +384,88 @@ class AgentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AgentError, "without a question"):
             self.call_agent(gemini)
+
+
+class ApiCallRecordingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_folder = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_folder.name) / "sales_agent.db"
+        initialize_database(self.database_path)
+        self.message_id = insert_incoming_message(
+            self.database_path,
+            "telegram:77",
+            "Hello",
+        )
+
+    def tearDown(self):
+        self.temp_folder.cleanup()
+
+    def read_api_calls(self):
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT purpose, status, prompt_tokens, completion_tokens,
+                       in_reply_to_message_id, error
+                FROM api_calls
+                ORDER BY id
+                """
+            ).fetchall()
+        return rows
+
+    def test_records_a_successful_model_call(self):
+        def generate_fn(history, model, api_key, system_instruction, **kwargs):
+            return {
+                "candidates": [{"content": {"parts": [{"text": "Прямой ответ"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 120,
+                    "candidatesTokenCount": 30,
+                },
+            }
+
+        reply = get_agent_reply(
+            [{"role": "user", "parts": [{"text": "Hi"}]}],
+            "Hello",
+            "gemini-model",
+            "key",
+            "system",
+            "selection",
+            "response",
+            generate_fn=generate_fn,
+            session_id="telegram:77",
+            database_path=self.database_path,
+            in_reply_to_message_id=self.message_id,
+        )
+
+        self.assertEqual(reply.customer_reply, "Прямой ответ")
+        self.assertEqual(
+            self.read_api_calls(),
+            [("decision", "ok", 120, 30, self.message_id, None)],
+        )
+
+    def test_records_a_failed_model_call_and_reraises(self):
+        def generate_fn(history, model, api_key, system_instruction, **kwargs):
+            raise RuntimeError("Gemini is down")
+
+        with self.assertRaises(RuntimeError):
+            get_agent_reply(
+                [{"role": "user", "parts": [{"text": "Hi"}]}],
+                "Hello",
+                "gemini-model",
+                "key",
+                "system",
+                "selection",
+                "response",
+                generate_fn=generate_fn,
+                session_id="telegram:77",
+                database_path=self.database_path,
+                in_reply_to_message_id=self.message_id,
+            )
+
+        purpose, status, prompt, completion, reply_to, error = self.read_api_calls()[0]
+        self.assertEqual((purpose, status), ("decision", "failed"))
+        self.assertEqual((prompt, completion), (0, 0))
+        self.assertEqual(reply_to, self.message_id)
+        self.assertIn("RuntimeError", error)
 
 
 if __name__ == "__main__":

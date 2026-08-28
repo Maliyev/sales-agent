@@ -189,7 +189,12 @@ Current tables:
   timestamp.
 - `tool_calls` — full details of agent tool calls (arguments, result, error,
   timing), linked to their lightweight `messages` row through `message_id`.
-- `recent_messages` and `blocked_sessions` — the spam rate limiter.
+- `api_calls` — one row per model API request with its purpose (`decision`,
+  `selection`, `final`), token usage, duration, and outcome. The table and the
+  token accounting are provider-agnostic: each provider module (currently
+  `gemini.py`) supplies its own usage extractor.
+- `recent_messages` and `blocked_sessions` — the spam rate limiter and token
+  abuse blocks.
 - `whatsapp_inbound_messages` — webhook deduplication.
 
 `/reset` deletes nothing: it marks the session's messages as `archived = 1`,
@@ -198,12 +203,63 @@ for analytics and future export.
 
 Message `status` values: `INITIALIZING`, `AWAITING_RESPONSE`,
 `AGENT_PROCESSING`, `RESPONSE_READY`, `DELIVERED`, and three failure states:
-`FAILED_LLM_API` (the Gemini request failed), `FAILED_DELIVERY` (the reply
-exists but could not be delivered), `FAILED_OTHER`. Telegram and WhatsApp
-replies are saved as `RESPONSE_READY` and are marked `DELIVERED` only after
-the channel client confirms the send; a failed send marks them
-`FAILED_DELIVERY`. The remaining intermediate states exist for the upcoming
-reply queue and offline backlog handling.
+`FAILED_LLM_API` (generation failed), `FAILED_DELIVERY` (the reply exists but
+could not be delivered), `FAILED_OTHER`. A customer message is stored as soon
+as it arrives (`INITIALIZING`) and is hidden from the model history until the
+turn finishes; successful sends mark the whole turn `DELIVERED`.
+
+## Token accounting and limits
+
+Every model request is written to `api_calls`, linked to the customer message
+that triggered it. Tunable settings live in `config.json` in the project root
+(secrets stay in `.env`):
+
+```json
+{
+  "gemini": {
+    "model": "gemini-2.5-flash-lite",
+    "tpm_limit": 0
+  },
+  "limits": {
+    "message_rate": {
+      "max_messages": 15,
+      "window_seconds": 60
+    },
+    "token_abuse": {
+      "limit": 0,
+      "window_seconds": 60
+    },
+    "context_overflow": {
+      "auto_reset": true
+    }
+  }
+}
+```
+
+- `gemini.model` — the Gemini model name (moved out of `.env`).
+- `gemini.tpm_limit` — an estimated tokens-per-minute budget across all
+  sessions. `0` disables it. When a request would exceed the budget, the
+  worker waits and retries every few seconds until the current minute window
+  frees up; after 10 minutes of waiting the turn fails. A single request that
+  is larger than the whole budget can never fit, so it fails fast instead of
+  waiting (see `limits.context_overflow` below).
+- `limits.message_rate` — a session is blocked after `max_messages` messages
+  inside `window_seconds` (the spam guard, previously hard-coded to 15 per
+  60 seconds).
+- `limits.token_abuse` — if one session consumes more than `limit` tokens
+  inside `window_seconds`, it is blocked in `blocked_sessions` exactly like a
+  spam session. `0` disables it.
+- `limits.context_overflow.auto_reset` — when a session's context alone is
+  too large for the TPM budget (`true` by default), the session history is
+  reset (archived, like `/reset`), the customer is told that the conversation
+  became too long, and the reply is generated again from a fresh context.
+  `false` makes the turn fail immediately instead.
+
+A missing, invalid, or incomplete `config.json` falls back to safe defaults
+(invalid values abort the startup with a clear error). Token usage comes from
+the provider response (`usageMetadata` for Gemini). The pre-request estimate
+uses the same conservative characters-per-token heuristic as the history size
+check.
 
 The previous pre-migration file is kept untouched as
 `data/sales_agent_legacy.db`; the program no longer reads it.

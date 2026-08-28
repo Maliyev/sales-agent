@@ -1,0 +1,164 @@
+import json
+from pathlib import Path
+
+from app_logging import get_logger
+
+
+logger = get_logger("config")
+
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+
+DEFAULT_CONFIG = {
+    "gemini": {
+        "model": "gemini-2.5-flash-lite",
+        "tpm_limit": 0,
+    },
+    "limits": {
+        "message_rate": {
+            "max_messages": 15,
+            "window_seconds": 60,
+        },
+        "token_abuse": {
+            "limit": 0,
+            "window_seconds": 60,
+        },
+        "context_overflow": {
+            "auto_reset": True,
+        },
+    },
+}
+
+_cached_config = None
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def load_config(path=None):
+    path = Path(path) if path is not None else CONFIG_PATH
+    config = _deep_copy(DEFAULT_CONFIG)
+
+    if not path.exists():
+        logger.warning(
+            "⚠️ Config file is missing, defaults are used | path=%s",
+            path,
+        )
+        return config
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigError(f"Config file is invalid: {error}") from error
+
+    if not isinstance(raw, dict):
+        raise ConfigError("Config file must contain a JSON object.")
+
+    _merge_into(config, raw)
+    _validate_config(config)
+    return config
+
+
+def get_config():
+    global _cached_config
+    if _cached_config is None:
+        _cached_config = load_config()
+    return _cached_config
+
+
+def set_config(config):
+    global _cached_config
+    _cached_config = config
+
+
+def get_gemini_model():
+    return get_config()["gemini"]["model"]
+
+
+def get_tpm_limit():
+    return get_config()["gemini"]["tpm_limit"]
+
+
+def get_message_rate_limits():
+    limits = get_config()["limits"]["message_rate"]
+    return limits["max_messages"], limits["window_seconds"]
+
+
+def get_token_abuse_settings():
+    limits = get_config()["limits"]["token_abuse"]
+    return limits["limit"], limits["window_seconds"]
+
+
+def get_context_overflow_auto_reset():
+    return get_config()["limits"]["context_overflow"]["auto_reset"]
+
+
+def _deep_copy(value):
+    if isinstance(value, dict):
+        return {key: _deep_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy(item) for item in value]
+    return value
+
+
+def _merge_into(target, source):
+    for key, value in source.items():
+        if (
+            key in target
+            and isinstance(target[key], dict)
+            and isinstance(value, dict)
+        ):
+            _merge_into(target[key], value)
+        else:
+            target[key] = value
+
+
+def _validate_config(config):
+    model = config["gemini"].get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ConfigError("gemini.model must be a non-empty string.")
+    _validate_non_negative_int(
+        config["gemini"].get("tpm_limit"),
+        "gemini.tpm_limit",
+    )
+
+    message_rate = config["limits"]["message_rate"]
+    max_messages = message_rate.get("max_messages")
+    if (
+        isinstance(max_messages, bool)
+        or not isinstance(max_messages, int)
+        or max_messages < 1
+    ):
+        raise ConfigError(
+            "limits.message_rate.max_messages must be a positive integer."
+        )
+    _validate_positive_int(
+        message_rate.get("window_seconds"),
+        "limits.message_rate.window_seconds",
+    )
+
+    token_abuse = config["limits"]["token_abuse"]
+    _validate_non_negative_int(
+        token_abuse.get("limit"),
+        "limits.token_abuse.limit",
+    )
+    _validate_positive_int(
+        token_abuse.get("window_seconds"),
+        "limits.token_abuse.window_seconds",
+    )
+
+    context_overflow = config["limits"]["context_overflow"]
+    if not isinstance(context_overflow.get("auto_reset"), bool):
+        raise ConfigError(
+            "limits.context_overflow.auto_reset must be a boolean."
+        )
+
+
+def _validate_non_negative_int(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{name} must be a non-negative integer.")
+
+
+def _validate_positive_int(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(f"{name} must be a positive integer.")
