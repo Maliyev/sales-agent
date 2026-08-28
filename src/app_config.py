@@ -12,6 +12,10 @@ DEFAULT_CONFIG = {
     "gemini": {
         "model": "gemini-2.5-flash-lite",
         "tpm_limit": 0,
+        "retry": {
+            "delays": [15, 30, 60, 120, 240],
+            "max_wait_seconds": 600,
+        },
     },
     "limits": {
         "message_rate": {
@@ -79,6 +83,11 @@ def get_tpm_limit():
     return get_config()["gemini"]["tpm_limit"]
 
 
+def get_gemini_retry_settings():
+    retry = get_config()["gemini"]["retry"]
+    return list(retry["delays"]), retry["max_wait_seconds"]
+
+
 def get_message_rate_limits():
     limits = get_config()["limits"]["message_rate"]
     return limits["max_messages"], limits["window_seconds"]
@@ -120,6 +129,23 @@ def _validate_config(config):
     _validate_non_negative_int(
         config["gemini"].get("tpm_limit"),
         "gemini.tpm_limit",
+    )
+    retry = config["gemini"].get("retry")
+    delays = retry.get("delays") if isinstance(retry, dict) else None
+    if (
+        not isinstance(delays, list)
+        or not delays
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) or item < 1
+            for item in delays
+        )
+    ):
+        raise ConfigError(
+            "gemini.retry.delays must be a non-empty list of positive integers."
+        )
+    _validate_positive_int(
+        retry.get("max_wait_seconds"),
+        "gemini.retry.max_wait_seconds",
     )
 
     message_rate = config["limits"]["message_rate"]

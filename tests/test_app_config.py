@@ -11,6 +11,7 @@ from app_config import (
     ConfigError,
     get_context_overflow_auto_reset,
     get_gemini_model,
+    get_gemini_retry_settings,
     get_message_rate_limits,
     get_token_abuse_settings,
     get_tpm_limit,
@@ -77,6 +78,21 @@ class LoadConfigTests(unittest.TestCase):
 
         self.assertRaises(ConfigError, load_config, self.path)
 
+    def test_rejects_empty_retry_delays(self):
+        self.write_config({"gemini": {"retry": {"delays": []}}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_non_positive_retry_delays(self):
+        self.write_config({"gemini": {"retry": {"delays": [15, 0]}}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_zero_retry_max_wait(self):
+        self.write_config({"gemini": {"retry": {"max_wait_seconds": 0}}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
 
 class ConfigAccessorsTests(unittest.TestCase):
     def setUp(self):
@@ -90,7 +106,11 @@ class ConfigAccessorsTests(unittest.TestCase):
     def test_accessors_read_the_active_config(self):
         set_config(
             {
-                "gemini": {"model": "test-model", "tpm_limit": 1000},
+                "gemini": {
+                    "model": "test-model",
+                    "tpm_limit": 1000,
+                    "retry": {"delays": [5, 10], "max_wait_seconds": 60},
+                },
                 "limits": {
                     "message_rate": {"max_messages": 7, "window_seconds": 30},
                     "token_abuse": {"limit": 900, "window_seconds": 45},
@@ -101,6 +121,7 @@ class ConfigAccessorsTests(unittest.TestCase):
 
         self.assertEqual(get_gemini_model(), "test-model")
         self.assertEqual(get_tpm_limit(), 1000)
+        self.assertEqual(get_gemini_retry_settings(), ([5, 10], 60))
         self.assertEqual(get_message_rate_limits(), (7, 30))
         self.assertEqual(get_token_abuse_settings(), (900, 45))
         self.assertIs(get_context_overflow_auto_reset(), False)

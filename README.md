@@ -208,17 +208,21 @@ could not be delivered), `FAILED_OTHER`. A customer message is stored as soon
 as it arrives (`INITIALIZING`) and is hidden from the model history until the
 turn finishes; successful sends mark the whole turn `DELIVERED`.
 
-## Token accounting and limits
+## Configuration reference (config.json)
 
 Every model request is written to `api_calls`, linked to the customer message
-that triggered it. Tunable settings live in `config.json` in the project root
-(secrets stay in `.env`):
+that triggered it. All tunable settings live in `config.json` in the project
+root (secrets stay in `.env`). Complete reference:
 
 ```json
 {
   "gemini": {
     "model": "gemini-2.5-flash-lite",
-    "tpm_limit": 0
+    "tpm_limit": 0,
+    "retry": {
+      "delays": [15, 30, 60, 120, 240],
+      "max_wait_seconds": 600
+    }
   },
   "limits": {
     "message_rate": {
@@ -243,6 +247,15 @@ that triggered it. Tunable settings live in `config.json` in the project root
   frees up; after 10 minutes of waiting the turn fails. A single request that
   is larger than the whole budget can never fit, so it fails fast instead of
   waiting (see `limits.context_overflow` below).
+- `gemini.retry.delays` — the waits between retries when the provider returns
+  a transient failure: HTTP 429 (rate limit), 500, 503, 504, or a network
+  error (connection failure, timeout). After the list is exhausted the last
+  value is reused.
+- `gemini.retry.max_wait_seconds` — the total waiting ceiling for retries
+  (about 10 minutes by default). After that the turn fails with
+  `FAILED_LLM_API`. Fatal provider errors (HTTP 400, 401, 403, 404 — bad
+  request, invalid API key, missing permissions, unknown model) fail
+  immediately without retries.
 - `limits.message_rate` — a session is blocked after `max_messages` messages
   inside `window_seconds` (the spam guard, previously hard-coded to 15 per
   60 seconds).
