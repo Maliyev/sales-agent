@@ -28,6 +28,9 @@ DEFAULT_CONFIG = {
         },
         "context_overflow": {
             "auto_reset": True,
+            "auto_compaction": False,
+            "compaction_model": "",
+            "context_token_limit": 0,
         },
     },
 }
@@ -100,6 +103,21 @@ def get_token_abuse_settings():
 
 def get_context_overflow_auto_reset():
     return get_config()["limits"]["context_overflow"]["auto_reset"]
+
+
+def get_context_overflow_auto_compaction():
+    return get_config()["limits"]["context_overflow"]["auto_compaction"]
+
+
+def get_compaction_model():
+    compaction_model = get_config()["limits"]["context_overflow"]["compaction_model"]
+    if isinstance(compaction_model, str) and compaction_model.strip():
+        return compaction_model.strip()
+    return get_gemini_model()
+
+
+def get_context_token_limit():
+    return get_config()["limits"]["context_overflow"].get("context_token_limit", 0)
 
 
 def _deep_copy(value):
@@ -178,6 +196,18 @@ def _validate_config(config):
         raise ConfigError(
             "limits.context_overflow.auto_reset must be a boolean."
         )
+    if not isinstance(context_overflow.get("auto_compaction"), bool):
+        raise ConfigError(
+            "limits.context_overflow.auto_compaction must be a boolean."
+        )
+    if not isinstance(context_overflow.get("compaction_model"), str):
+        raise ConfigError(
+            "limits.context_overflow.compaction_model must be a string."
+        )
+    _validate_non_negative_int(
+        context_overflow.get("context_token_limit"),
+        "limits.context_overflow.context_token_limit",
+    )
 
 
 def _validate_non_negative_int(value, name):

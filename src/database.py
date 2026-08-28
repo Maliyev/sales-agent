@@ -142,9 +142,62 @@ def migration_002_api_calls(connection):
     )
 
 
+def migration_003_compaction_api_calls(connection):
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_calls'"
+    ).fetchone()
+    if row is not None and "compaction" in (row["sql"] or ""):
+        return
+
+    connection.execute(
+        """
+        CREATE TABLE api_calls_new (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            in_reply_to_message_id INTEGER REFERENCES messages(id),
+            purpose TEXT NOT NULL CHECK(purpose IN ('decision', 'selection', 'final', 'compaction')),
+            model TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('ok', 'failed')),
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO api_calls_new (
+            id, session_id, in_reply_to_message_id, purpose, model,
+            prompt_tokens, completion_tokens, duration_ms, status, error, created_at
+        )
+        SELECT
+            id, session_id, in_reply_to_message_id, purpose, model,
+            prompt_tokens, completion_tokens, duration_ms, status, error, created_at
+        FROM api_calls
+        """
+    )
+    connection.execute("DROP TABLE api_calls")
+    connection.execute("ALTER TABLE api_calls_new RENAME TO api_calls")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_session_time
+        ON api_calls(session_id, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_time
+        ON api_calls(created_at)
+        """
+    )
+
+
 MIGRATIONS = (
     migration_001_initial_schema,
     migration_002_api_calls,
+    migration_003_compaction_api_calls,
 )
 
 
@@ -186,11 +239,57 @@ def load_history(database_path, session_id):
             (session_id,),
         ).fetchall()
         return [
-            {"role": row["role"], "parts": [{"text": row["text"]}]}
+            {
+                "role": "user" if row["role"] == "tool" else row["role"],
+                "parts": [{"text": row["text"]}],
+            }
             for row in rows
         ]
 
     return run_database_operation(database_path, read_messages)
+
+
+def load_history_with_timestamps(database_path, session_id):
+    session_id = validate_session_id(session_id)
+
+    def read_messages(connection):
+        rows = connection.execute(
+            """
+            SELECT role, text, created_at
+            FROM messages
+            WHERE session_id = ? AND archived = 0
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    return run_database_operation(database_path, read_messages)
+
+
+def add_history_summary(database_path, session_id, summary_text):
+    session_id = validate_session_id(session_id)
+    summary_text = validate_message_text(summary_text)
+
+    def replace_history(connection):
+        connection.execute(
+            """
+            UPDATE messages
+            SET archived = 1
+            WHERE session_id = ? AND archived = 0
+            """,
+            (session_id,),
+        )
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (session_id, role, text, status)
+            VALUES (?, 'tool', ?, 'DELIVERED')
+            """,
+            (session_id, summary_text),
+        )
+        return cursor.lastrowid
+
+    return run_database_operation(database_path, replace_history)
 
 
 def save_exchange(

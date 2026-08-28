@@ -234,7 +234,9 @@ root (secrets stay in `.env`). Complete reference:
       "window_seconds": 60
     },
     "context_overflow": {
-      "auto_reset": true
+      "auto_reset": true,
+      "auto_compaction": false,
+      "compaction_model": ""
     }
   }
 }
@@ -267,6 +269,23 @@ root (secrets stay in `.env`). Complete reference:
   reset (archived, like `/reset`), the customer is told that the conversation
   became too long, and the reply is generated again from a fresh context.
   `false` makes the turn fail immediately instead.
+- `limits.context_overflow.auto_compaction` — instead of resetting, a
+  dedicated compactor prompt summarizes the whole session (with UTC
+  timestamps) into a short bullet summary. The summarized messages are
+  archived and replaced by one internal summary row, so the conversation can
+  continue without the customer noticing. If compaction is impossible or
+  fails, the `auto_reset` behavior is used as a fallback (when enabled).
+  Compaction requests are recorded in `api_calls` with the
+  `compaction` purpose and are intentionally exempt from the TPM wait (the
+  request has to be larger than the limit it recovers from).
+- `limits.context_overflow.compaction_model` — the model used for the
+  compaction request; an empty string falls back to `gemini.model`.
+- `limits.context_overflow.context_token_limit` — a per-session context
+  threshold, independent of the TPM budget: when a single session's estimated
+  request (history + system instruction + message) exceeds it, compaction
+  fires even though the request would fit the per-minute budget. `0`
+  disables it (compaction then only triggers when the request cannot fit
+  `gemini.tpm_limit` at all).
 
 A missing, invalid, or incomplete `config.json` falls back to safe defaults
 (invalid values abort the startup with a clear error). Token usage comes from

@@ -28,6 +28,7 @@ def build_config(
     message_window=60,
     token_abuse_limit=0,
     token_abuse_window=60,
+    context_token_limit=0,
 ):
     return {
         "gemini": {"model": "gemini-model", "tpm_limit": tpm_limit},
@@ -39,6 +40,12 @@ def build_config(
             "token_abuse": {
                 "limit": token_abuse_limit,
                 "window_seconds": token_abuse_window,
+            },
+            "context_overflow": {
+                "auto_reset": True,
+                "auto_compaction": False,
+                "compaction_model": "",
+                "context_token_limit": context_token_limit,
             },
         },
     }
@@ -63,8 +70,10 @@ class WaitForTokenBudgetTests(unittest.TestCase):
         create_session(self.database_path, "telegram:1")
         self.clock = FakeClock()
         self.sleeps = []
+        set_config(build_config())
 
     def tearDown(self):
+        set_config(None)
         self.temp_folder.cleanup()
 
     def sleep_fn(self, seconds):
@@ -126,6 +135,50 @@ class WaitForTokenBudgetTests(unittest.TestCase):
 
     def test_fails_fast_when_a_single_request_exceeds_the_limit(self):
         with self.assertRaises(SessionContextTooLargeError):
+            wait_for_token_budget(
+                self.database_path,
+                1500,
+                tpm_limit=1000,
+                clock=self.clock.time,
+                sleep_fn=self.sleep_fn,
+            )
+
+        self.assertEqual(self.sleeps, [])
+
+    def test_fails_fast_when_the_session_context_exceeds_its_limit(self):
+        set_config(build_config(tpm_limit=0, context_token_limit=1000))
+
+        with self.assertRaises(SessionContextTooLargeError):
+            wait_for_token_budget(
+                self.database_path,
+                1500,
+                tpm_limit=0,
+                clock=self.clock.time,
+                sleep_fn=self.sleep_fn,
+            )
+
+        self.assertEqual(self.sleeps, [])
+
+    def test_allows_a_session_context_under_its_limit(self):
+        set_config(build_config(tpm_limit=0, context_token_limit=1000))
+
+        wait_for_token_budget(
+            self.database_path,
+            999,
+            tpm_limit=0,
+            clock=self.clock.time,
+            sleep_fn=self.sleep_fn,
+        )
+
+        self.assertEqual(self.sleeps, [])
+
+    def test_the_session_context_limit_is_checked_before_the_tpm_limit(self):
+        set_config(build_config(tpm_limit=1000, context_token_limit=500))
+
+        with self.assertRaisesRegex(
+            SessionContextTooLargeError,
+            "context limit",
+        ):
             wait_for_token_budget(
                 self.database_path,
                 1500,
