@@ -18,6 +18,7 @@ from app_config import (
     get_message_rate_limits,
     get_token_abuse_settings,
     get_tpm_limit,
+    get_thinking_level,
     load_config,
     set_config,
 )
@@ -40,6 +41,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config["limits"]["message_rate"]["max_messages"], 15)
         self.assertEqual(config["limits"]["message_rate"]["window_seconds"], 60)
         self.assertEqual(config["gemini"]["tpm_limit"], 0)
+        self.assertEqual(config["gemini"]["thinking_level"], "")
         self.assertIs(config["limits"]["context_overflow"]["auto_reset"], True)
         self.assertIs(
             config["limits"]["context_overflow"]["auto_compaction"],
@@ -80,6 +82,16 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_rejects_a_negative_tpm_limit(self):
         self.write_config({"gemini": {"tpm_limit": -5}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_an_unknown_thinking_level(self):
+        self.write_config({"gemini": {"thinking_level": "mega"}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_non_string_thinking_level(self):
+        self.write_config({"gemini": {"thinking_level": 3}})
 
         self.assertRaises(ConfigError, load_config, self.path)
 
@@ -145,6 +157,7 @@ class ConfigAccessorsTests(unittest.TestCase):
                 "gemini": {
                     "model": "test-model",
                     "tpm_limit": 1000,
+                    "thinking_level": "high",
                     "retry": {"delays": [5, 10], "max_wait_seconds": 60},
                 },
                 "limits": {
@@ -162,6 +175,7 @@ class ConfigAccessorsTests(unittest.TestCase):
 
         self.assertEqual(get_gemini_model(), "test-model")
         self.assertEqual(get_tpm_limit(), 1000)
+        self.assertEqual(get_thinking_level(), "high")
         self.assertEqual(get_gemini_retry_settings(), ([5, 10], 60))
         self.assertEqual(get_message_rate_limits(), (7, 30))
         self.assertEqual(get_token_abuse_settings(), (900, 45))

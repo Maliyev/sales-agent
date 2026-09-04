@@ -2,7 +2,7 @@ import time
 
 import requests
 
-from app_config import get_gemini_retry_settings
+from app_config import get_gemini_retry_settings, get_thinking_level
 from app_logging import get_logger
 
 
@@ -49,6 +49,11 @@ def generate_content(
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": history,
     }
+    thinking_level = get_thinking_level()
+    if thinking_level:
+        payload["generationConfig"] = {
+            "thinkingConfig": {"thinkingLevel": thinking_level}
+        }
     if tools is not None:
         payload["tools"] = tools
     if tool_config is not None:

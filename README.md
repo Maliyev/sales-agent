@@ -219,8 +219,9 @@ root (secrets stay in `.env`). Complete reference:
   "gemini": {
     "model": "gemini-2.5-flash-lite",
     "tpm_limit": 0,
+    "thinking_level": "",
     "retry": {
-      "delays": [15, 30, 60, 120, 240],
+      "delays": [5, 15, 30, 60, 120, 240],
       "max_wait_seconds": 600
     }
   },
@@ -249,6 +250,10 @@ root (secrets stay in `.env`). Complete reference:
   frees up; after 10 minutes of waiting the turn fails. A single request that
   is larger than the whole budget can never fit, so it fails fast instead of
   waiting (see `limits.context_overflow` below).
+- `gemini.thinking_level` — the reasoning effort for thinking models
+  (`minimal`, `low`, `medium`, `high`); an empty string leaves the provider's
+  dynamic default. Applied to the agent and the compactor alike. A level the
+  chosen model does not support is rejected by the API as a fatal HTTP 400.
 - `gemini.retry.delays` — the waits between retries when the provider returns
   a transient failure: HTTP 429 (rate limit), 500, 503, 504, or a network
   error (connection failure, timeout). After the list is exhausted the last

@@ -8,12 +8,15 @@ logger = get_logger("config")
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 
+THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+
 DEFAULT_CONFIG = {
     "gemini": {
         "model": "gemini-2.5-flash-lite",
         "tpm_limit": 0,
+        "thinking_level": "",
         "retry": {
-            "delays": [15, 30, 60, 120, 240],
+            "delays": [5, 15, 30, 60, 120, 240],
             "max_wait_seconds": 600,
         },
     },
@@ -86,6 +89,10 @@ def get_tpm_limit():
     return get_config()["gemini"]["tpm_limit"]
 
 
+def get_thinking_level():
+    return get_config()["gemini"].get("thinking_level", "")
+
+
 def get_gemini_retry_settings():
     retry = get_config()["gemini"]["retry"]
     return list(retry["delays"]), retry["max_wait_seconds"]
@@ -148,6 +155,14 @@ def _validate_config(config):
         config["gemini"].get("tpm_limit"),
         "gemini.tpm_limit",
     )
+    thinking_level = config["gemini"].get("thinking_level")
+    if not isinstance(thinking_level, str) or (
+        thinking_level and thinking_level not in THINKING_LEVELS
+    ):
+        raise ConfigError(
+            "gemini.thinking_level must be an empty string or one of: "
+            "minimal, low, medium, high."
+        )
     retry = config["gemini"].get("retry")
     delays = retry.get("delays") if isinstance(retry, dict) else None
     if (

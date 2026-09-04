@@ -7,6 +7,7 @@ import requests
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
+from app_config import set_config
 from gemini import (
     MAX_HISTORY_CHARACTERS,
     GeminiFatalError,
@@ -20,6 +21,9 @@ from gemini import (
 
 
 class GeminiHistoryTests(unittest.TestCase):
+    def tearDown(self):
+        set_config(None)
+
     def test_allows_history_under_the_limit(self):
         history = [{"role": "user", "parts": [{"text": "Hello"}]}]
 
@@ -57,6 +61,52 @@ class GeminiHistoryTests(unittest.TestCase):
         self.assertEqual(
             payload["systemInstruction"]["parts"][0]["text"], "Be helpful."
         )
+
+    def test_sends_the_thinking_level_when_it_is_configured(self):
+        set_config(
+            {
+                "gemini": {
+                    "model": "test-model",
+                    "thinking_level": "high",
+                    "retry": {"delays": [1], "max_wait_seconds": 2},
+                }
+            }
+        )
+        response = Mock()
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Hi"}]}}]
+        }
+        history = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
+        with patch("gemini.requests.post", return_value=response) as post:
+            generate_content(history, "test-model", "test-key", "Be helpful.")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["generationConfig"],
+            {"thinkingConfig": {"thinkingLevel": "high"}},
+        )
+
+    def test_omits_the_thinking_config_when_it_is_not_configured(self):
+        set_config(
+            {
+                "gemini": {
+                    "model": "test-model",
+                    "retry": {"delays": [1], "max_wait_seconds": 2},
+                }
+            }
+        )
+        response = Mock()
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Hi"}]}}]
+        }
+        history = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
+        with patch("gemini.requests.post", return_value=response) as post:
+            generate_content(history, "test-model", "test-key", "Be helpful.")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("generationConfig", payload)
 
     def test_sends_optional_tool_configuration(self):
         response = Mock()
