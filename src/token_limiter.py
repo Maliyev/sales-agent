@@ -1,6 +1,10 @@
 import time
 
-from app_config import get_token_abuse_settings, get_tpm_limit
+from app_config import (
+    get_context_token_limit,
+    get_token_abuse_settings,
+    get_tpm_limit,
+)
 from app_logging import get_logger
 from database import block_session, sum_tokens_in_window
 
@@ -31,6 +35,14 @@ def wait_for_token_budget(
 ):
     if tpm_limit is None:
         tpm_limit = get_tpm_limit()
+
+    context_limit = get_context_token_limit()
+    if context_limit > 0 and estimated_tokens > context_limit:
+        raise SessionContextTooLargeError(
+            f"Estimated request size {estimated_tokens} tokens exceeds "
+            f"the per-session context limit of {context_limit}."
+        )
+
     if tpm_limit <= 0:
         return
 

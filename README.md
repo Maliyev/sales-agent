@@ -208,17 +208,22 @@ could not be delivered), `FAILED_OTHER`. A customer message is stored as soon
 as it arrives (`INITIALIZING`) and is hidden from the model history until the
 turn finishes; successful sends mark the whole turn `DELIVERED`.
 
-## Token accounting and limits
+## Configuration reference (config.json)
 
 Every model request is written to `api_calls`, linked to the customer message
-that triggered it. Tunable settings live in `config.json` in the project root
-(secrets stay in `.env`):
+that triggered it. All tunable settings live in `config.json` in the project
+root (secrets stay in `.env`). Complete reference:
 
 ```json
 {
   "gemini": {
     "model": "gemini-2.5-flash-lite",
-    "tpm_limit": 0
+    "tpm_limit": 0,
+    "thinking_level": "",
+    "retry": {
+      "delays": [5, 15, 30, 60, 120, 240],
+      "max_wait_seconds": 600
+    }
   },
   "limits": {
     "message_rate": {
@@ -230,7 +235,9 @@ that triggered it. Tunable settings live in `config.json` in the project root
       "window_seconds": 60
     },
     "context_overflow": {
-      "auto_reset": true
+      "auto_reset": true,
+      "auto_compaction": false,
+      "compaction_model": ""
     }
   }
 }
@@ -243,6 +250,19 @@ that triggered it. Tunable settings live in `config.json` in the project root
   frees up; after 10 minutes of waiting the turn fails. A single request that
   is larger than the whole budget can never fit, so it fails fast instead of
   waiting (see `limits.context_overflow` below).
+- `gemini.thinking_level` — the reasoning effort for thinking models
+  (`minimal`, `low`, `medium`, `high`); an empty string leaves the provider's
+  dynamic default. Applied to the agent and the compactor alike. A level the
+  chosen model does not support is rejected by the API as a fatal HTTP 400.
+- `gemini.retry.delays` — the waits between retries when the provider returns
+  a transient failure: HTTP 429 (rate limit), 500, 503, 504, or a network
+  error (connection failure, timeout). After the list is exhausted the last
+  value is reused.
+- `gemini.retry.max_wait_seconds` — the total waiting ceiling for retries
+  (about 10 minutes by default). After that the turn fails with
+  `FAILED_LLM_API`. Fatal provider errors (HTTP 400, 401, 403, 404 — bad
+  request, invalid API key, missing permissions, unknown model) fail
+  immediately without retries.
 - `limits.message_rate` — a session is blocked after `max_messages` messages
   inside `window_seconds` (the spam guard, previously hard-coded to 15 per
   60 seconds).
@@ -254,6 +274,23 @@ that triggered it. Tunable settings live in `config.json` in the project root
   reset (archived, like `/reset`), the customer is told that the conversation
   became too long, and the reply is generated again from a fresh context.
   `false` makes the turn fail immediately instead.
+- `limits.context_overflow.auto_compaction` — instead of resetting, a
+  dedicated compactor prompt summarizes the whole session (with UTC
+  timestamps) into a short bullet summary. The summarized messages are
+  archived and replaced by one internal summary row, so the conversation can
+  continue without the customer noticing. If compaction is impossible or
+  fails, the `auto_reset` behavior is used as a fallback (when enabled).
+  Compaction requests are recorded in `api_calls` with the
+  `compaction` purpose and are intentionally exempt from the TPM wait (the
+  request has to be larger than the limit it recovers from).
+- `limits.context_overflow.compaction_model` — the model used for the
+  compaction request; an empty string falls back to `gemini.model`.
+- `limits.context_overflow.context_token_limit` — a per-session context
+  threshold, independent of the TPM budget: when a single session's estimated
+  request (history + system instruction + message) exceeds it, compaction
+  fires even though the request would fit the per-minute budget. `0`
+  disables it (compaction then only triggers when the request cannot fit
+  `gemini.tpm_limit` at all).
 
 A missing, invalid, or incomplete `config.json` falls back to safe defaults
 (invalid values abort the startup with a clear error). Token usage comes from

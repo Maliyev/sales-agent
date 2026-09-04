@@ -8,10 +8,17 @@ logger = get_logger("config")
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 
+THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+
 DEFAULT_CONFIG = {
     "gemini": {
         "model": "gemini-2.5-flash-lite",
         "tpm_limit": 0,
+        "thinking_level": "",
+        "retry": {
+            "delays": [5, 15, 30, 60, 120, 240],
+            "max_wait_seconds": 600,
+        },
     },
     "limits": {
         "message_rate": {
@@ -24,6 +31,9 @@ DEFAULT_CONFIG = {
         },
         "context_overflow": {
             "auto_reset": True,
+            "auto_compaction": False,
+            "compaction_model": "",
+            "context_token_limit": 0,
         },
     },
 }
@@ -79,6 +89,15 @@ def get_tpm_limit():
     return get_config()["gemini"]["tpm_limit"]
 
 
+def get_thinking_level():
+    return get_config()["gemini"].get("thinking_level", "")
+
+
+def get_gemini_retry_settings():
+    retry = get_config()["gemini"]["retry"]
+    return list(retry["delays"]), retry["max_wait_seconds"]
+
+
 def get_message_rate_limits():
     limits = get_config()["limits"]["message_rate"]
     return limits["max_messages"], limits["window_seconds"]
@@ -91,6 +110,21 @@ def get_token_abuse_settings():
 
 def get_context_overflow_auto_reset():
     return get_config()["limits"]["context_overflow"]["auto_reset"]
+
+
+def get_context_overflow_auto_compaction():
+    return get_config()["limits"]["context_overflow"]["auto_compaction"]
+
+
+def get_compaction_model():
+    compaction_model = get_config()["limits"]["context_overflow"]["compaction_model"]
+    if isinstance(compaction_model, str) and compaction_model.strip():
+        return compaction_model.strip()
+    return get_gemini_model()
+
+
+def get_context_token_limit():
+    return get_config()["limits"]["context_overflow"].get("context_token_limit", 0)
 
 
 def _deep_copy(value):
@@ -120,6 +154,31 @@ def _validate_config(config):
     _validate_non_negative_int(
         config["gemini"].get("tpm_limit"),
         "gemini.tpm_limit",
+    )
+    thinking_level = config["gemini"].get("thinking_level")
+    if not isinstance(thinking_level, str) or (
+        thinking_level and thinking_level not in THINKING_LEVELS
+    ):
+        raise ConfigError(
+            "gemini.thinking_level must be an empty string or one of: "
+            "minimal, low, medium, high."
+        )
+    retry = config["gemini"].get("retry")
+    delays = retry.get("delays") if isinstance(retry, dict) else None
+    if (
+        not isinstance(delays, list)
+        or not delays
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) or item < 1
+            for item in delays
+        )
+    ):
+        raise ConfigError(
+            "gemini.retry.delays must be a non-empty list of positive integers."
+        )
+    _validate_positive_int(
+        retry.get("max_wait_seconds"),
+        "gemini.retry.max_wait_seconds",
     )
 
     message_rate = config["limits"]["message_rate"]
@@ -152,6 +211,18 @@ def _validate_config(config):
         raise ConfigError(
             "limits.context_overflow.auto_reset must be a boolean."
         )
+    if not isinstance(context_overflow.get("auto_compaction"), bool):
+        raise ConfigError(
+            "limits.context_overflow.auto_compaction must be a boolean."
+        )
+    if not isinstance(context_overflow.get("compaction_model"), str):
+        raise ConfigError(
+            "limits.context_overflow.compaction_model must be a string."
+        )
+    _validate_non_negative_int(
+        context_overflow.get("context_token_limit"),
+        "limits.context_overflow.context_token_limit",
+    )
 
 
 def _validate_non_negative_int(value, name):

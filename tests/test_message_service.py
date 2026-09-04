@@ -7,6 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from message_service import generate_customer_reply, reply_to_customer
 from agent_reply import AgentReply
+from compaction import CompactionError
 from token_limiter import SessionContextTooLargeError
 
 
@@ -98,6 +99,7 @@ class MessageServiceTests(unittest.TestCase):
 
 
 class ContextOverflowTests(unittest.TestCase):
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=False)
     @patch("message_service.log_conversation")
     @patch("message_service.reset_history")
     @patch("message_service.get_context_overflow_auto_reset", return_value=True)
@@ -110,6 +112,7 @@ class ContextOverflowTests(unittest.TestCase):
         get_context_overflow_auto_reset,
         reset_history,
         log_conversation,
+        get_context_overflow_auto_compaction,
     ):
         get_agent_reply.side_effect = [
             SessionContextTooLargeError("Estimated 1500 tokens exceed the limit"),
@@ -142,6 +145,7 @@ class ContextOverflowTests(unittest.TestCase):
             ),
         )
 
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=False)
     @patch("message_service.reset_history")
     @patch("message_service.get_context_overflow_auto_reset", return_value=False)
     @patch("message_service.load_history", return_value=[])
@@ -152,6 +156,7 @@ class ContextOverflowTests(unittest.TestCase):
         load_history,
         get_context_overflow_auto_reset,
         reset_history,
+        get_context_overflow_auto_compaction,
     ):
         get_agent_reply.side_effect = SessionContextTooLargeError("too large")
 
@@ -169,6 +174,182 @@ class ContextOverflowTests(unittest.TestCase):
 
         reset_history.assert_not_called()
         get_agent_reply.assert_called_once()
+
+
+class ContextCompactionTests(unittest.TestCase):
+    @staticmethod
+    def reply():
+        return generate_customer_reply(
+            "database.db",
+            "telegram:123",
+            "Hello",
+            "model",
+            "key",
+            "system",
+            "selection",
+            "response",
+            in_reply_to_message_id=8,
+        )
+
+    @patch("message_service.get_compaction_model", return_value="compactor-model")
+    @patch("message_service.get_context_overflow_auto_reset", return_value=False)
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=True)
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.compact_history")
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Fresh reply"))
+    def test_compacts_the_context_and_retries_without_a_notice(
+        self,
+        get_agent_reply,
+        compact_history,
+        load_history,
+        get_context_overflow_auto_compaction,
+        get_context_overflow_auto_reset,
+        get_compaction_model,
+    ):
+        get_agent_reply.side_effect = [
+            SessionContextTooLargeError("too large"),
+            AgentReply("Fresh reply"),
+        ]
+
+        reply = self.reply()
+
+        compact_history.assert_called_once_with(
+            "database.db",
+            "telegram:123",
+            model="compactor-model",
+            api_key="key",
+            in_reply_to_message_id=8,
+        )
+        self.assertEqual(get_agent_reply.call_count, 2)
+        self.assertEqual(
+            get_agent_reply.call_args.kwargs["in_reply_to_message_id"],
+            8,
+        )
+        self.assertEqual(reply, AgentReply("Fresh reply"))
+
+    @patch("message_service.get_compaction_model", return_value="compactor-model")
+    @patch("message_service.log_conversation")
+    @patch("message_service.reset_history")
+    @patch("message_service.get_context_overflow_auto_reset", return_value=True)
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=True)
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.compact_history")
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Fresh reply"))
+    def test_falls_back_to_reset_when_compaction_fails(
+        self,
+        get_agent_reply,
+        compact_history,
+        load_history,
+        get_context_overflow_auto_compaction,
+        get_context_overflow_auto_reset,
+        reset_history,
+        log_conversation,
+        get_compaction_model,
+    ):
+        get_agent_reply.side_effect = [
+            SessionContextTooLargeError("too large"),
+            AgentReply("Fresh reply"),
+        ]
+        compact_history.side_effect = CompactionError("Gemini down")
+
+        reply = self.reply()
+
+        compact_history.assert_called_once()
+        reset_history.assert_called_once_with("database.db", "telegram:123")
+        self.assertEqual(
+            reply,
+            AgentReply(
+                "Your conversation became too long, so we had to reset it.\n\nFresh reply"
+            ),
+        )
+
+    @patch("message_service.get_compaction_model", return_value="compactor-model")
+    @patch("message_service.reset_history")
+    @patch("message_service.get_context_overflow_auto_reset", return_value=False)
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=True)
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.compact_history")
+    @patch("message_service.get_agent_reply")
+    def test_propagates_when_compaction_fails_and_reset_is_disabled(
+        self,
+        get_agent_reply,
+        compact_history,
+        load_history,
+        get_context_overflow_auto_compaction,
+        get_context_overflow_auto_reset,
+        reset_history,
+        get_compaction_model,
+    ):
+        get_agent_reply.side_effect = SessionContextTooLargeError("too large")
+        compact_history.side_effect = CompactionError("Gemini down")
+
+        with self.assertRaises(SessionContextTooLargeError):
+            self.reply()
+
+        compact_history.assert_called_once()
+        reset_history.assert_not_called()
+        get_agent_reply.assert_called_once()
+
+    @patch("message_service.log_conversation")
+    @patch("message_service.reset_history")
+    @patch("message_service.get_context_overflow_auto_reset", return_value=True)
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=True)
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.compact_history")
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Last reply"))
+    def test_falls_back_to_reset_when_the_compacted_context_is_still_too_large(
+        self,
+        get_agent_reply,
+        compact_history,
+        load_history,
+        get_context_overflow_auto_compaction,
+        get_context_overflow_auto_reset,
+        reset_history,
+        log_conversation,
+    ):
+        get_agent_reply.side_effect = [
+            SessionContextTooLargeError("too large"),
+            SessionContextTooLargeError("still too large"),
+            AgentReply("Last reply"),
+        ]
+
+        reply = self.reply()
+
+        compact_history.assert_called_once()
+        reset_history.assert_called_once_with("database.db", "telegram:123")
+        self.assertEqual(get_agent_reply.call_count, 3)
+        self.assertEqual(
+            reply,
+            AgentReply(
+                "Your conversation became too long, so we had to reset it.\n\nLast reply"
+            ),
+        )
+
+    @patch("message_service.reset_history")
+    @patch("message_service.get_context_overflow_auto_reset", return_value=False)
+    @patch("message_service.get_context_overflow_auto_compaction", return_value=True)
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.compact_history")
+    @patch("message_service.get_agent_reply")
+    def test_propagates_when_the_compacted_context_is_still_too_large(
+        self,
+        get_agent_reply,
+        compact_history,
+        load_history,
+        get_context_overflow_auto_compaction,
+        get_context_overflow_auto_reset,
+        reset_history,
+    ):
+        get_agent_reply.side_effect = [
+            SessionContextTooLargeError("too large"),
+            SessionContextTooLargeError("still too large"),
+        ]
+
+        with self.assertRaises(SessionContextTooLargeError):
+            self.reply()
+
+        reset_history.assert_not_called()
+        self.assertEqual(get_agent_reply.call_count, 2)
 
 
 if __name__ == "__main__":

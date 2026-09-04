@@ -9,13 +9,17 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from database import (
     DatabaseError,
+    add_history_summary,
     block_session,
     create_session,
     initialize_database,
     insert_incoming_message,
     list_sessions,
     load_history,
+    load_history_with_timestamps,
     load_session_messages,
+    migration_001_initial_schema,
+    migration_002_api_calls,
     record_api_call,
     reset_history,
     run_database_operation,
@@ -73,7 +77,7 @@ class DatabaseSchemaTests(unittest.TestCase):
             }
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertIn("api_calls", names)
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def test_reinitializing_an_up_to_date_database_changes_nothing(self):
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -87,8 +91,8 @@ class DatabaseSchemaTests(unittest.TestCase):
             version_after = connection.execute(
                 "PRAGMA user_version"
             ).fetchone()[0]
-        self.assertEqual(version_before, 2)
-        self.assertEqual(version_after, 2)
+        self.assertEqual(version_before, 3)
+        self.assertEqual(version_after, 3)
 
     def test_saved_exchanges_get_delivered_status_and_visible_by_default(self):
         save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
@@ -332,6 +336,147 @@ class ArchiveAndResetTests(unittest.TestCase):
         self.assertEqual(overview[0]["message_count"], 2)
         self.assertEqual(overview[0]["last_role"], "model")
         self.assertEqual(overview[0]["last_text"], "New answer")
+
+
+class CompactionStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_folder = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_folder.name) / "sales_agent.db"
+        initialize_database(self.database_path)
+
+    def tearDown(self):
+        self.temp_folder.cleanup()
+
+    def test_migration_allows_the_compaction_purpose(self):
+        create_session(self.database_path, "telegram:1")
+
+        record_api_call(
+            self.database_path,
+            "telegram:1",
+            None,
+            "compaction",
+            "gemini-model",
+            prompt_tokens=120,
+            completion_tokens=40,
+        )
+
+        def write_invalid_purpose():
+            def operation(connection):
+                connection.execute(
+                    """
+                    INSERT INTO api_calls (session_id, purpose, model)
+                    VALUES ('telegram:1', 'bogus', 'gemini-model')
+                    """
+                )
+
+            return run_database_operation(self.database_path, operation)
+
+        self.assertRaises(DatabaseError, write_invalid_purpose)
+
+    def test_migration_expands_purposes_of_a_version_2_database(self):
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            migration_001_initial_schema(connection)
+            migration_002_api_calls(connection)
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+
+        initialize_database(self.database_path)
+
+        create_session(self.database_path, "telegram:1")
+        record_api_call(
+            self.database_path,
+            "telegram:1",
+            None,
+            "compaction",
+            "gemini-model",
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            rows = connection.execute(
+                "SELECT purpose FROM api_calls"
+            ).fetchall()
+        self.assertEqual(version, 3)
+        self.assertEqual(rows, [("compaction",)])
+
+    def test_add_history_summary_archives_messages_and_inserts_a_tool_row(self):
+        save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
+
+        summary_id = add_history_summary(
+            self.database_path,
+            "telegram:1",
+            "Summary of the earlier conversation:\n- Wants a laptop",
+        )
+
+        history = load_history(self.database_path, "telegram:1")
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT role, archived, status FROM messages ORDER BY id"
+            ).fetchall()
+        self.assertEqual(
+            history,
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "Summary of the earlier conversation:\n- Wants a laptop"}
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(
+            rows,
+            [
+                ("user", 1, "DELIVERED"),
+                ("model", 1, "DELIVERED"),
+                ("tool", 0, "DELIVERED"),
+            ],
+        )
+        self.assertIsInstance(summary_id, int)
+
+    def test_a_new_summary_replaces_the_previous_summary(self):
+        save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
+        add_history_summary(self.database_path, "telegram:1", "First summary")
+
+        add_history_summary(self.database_path, "telegram:1", "Second summary")
+
+        history = load_history(self.database_path, "telegram:1")
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            archived = connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE archived = 1"
+            ).fetchone()[0]
+        self.assertEqual(
+            [entry["parts"][0]["text"] for entry in history],
+            ["Second summary"],
+        )
+        self.assertEqual(archived, 3)
+
+    def test_load_history_with_timestamps_includes_pending_rows(self):
+        save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
+        insert_incoming_message(
+            self.database_path,
+            "telegram:1",
+            "Pending question",
+        )
+
+        rows = load_history_with_timestamps(self.database_path, "telegram:1")
+
+        self.assertEqual(
+            [(row["role"], row["text"]) for row in rows],
+            [
+                ("user", "Hello"),
+                ("model", "Hi"),
+                ("user", "Pending question"),
+            ],
+        )
+
+    def test_load_history_with_timestamps_skips_archived_rows(self):
+        save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
+        reset_history(self.database_path, "telegram:1")
+
+        rows = load_history_with_timestamps(self.database_path, "telegram:1")
+
+        self.assertEqual(rows, [])
 
 
 if __name__ == "__main__":

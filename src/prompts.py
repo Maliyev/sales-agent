@@ -10,6 +10,7 @@ PROMPT_FILES = (
     "prompts/05_operator.md",
     "knowledge/store.md",
 )
+COMPACTION_PROMPT_FILE = "prompts/06_compaction.md"
 
 
 def load_system_instruction(project_path=PROJECT_PATH):
@@ -17,6 +18,10 @@ def load_system_instruction(project_path=PROJECT_PATH):
         load_prompt_file(relative_path, project_path)
         for relative_path in PROMPT_FILES
     )
+
+
+def load_compaction_instruction(project_path=PROJECT_PATH):
+    return load_prompt_file(COMPACTION_PROMPT_FILE, project_path)
 
 
 def load_prompt_file(relative_path, project_path=PROJECT_PATH):

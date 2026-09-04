@@ -1,9 +1,30 @@
+import time
+
 import requests
+
+from app_config import get_gemini_retry_settings, get_thinking_level
+from app_logging import get_logger
 
 
 MAX_ESTIMATED_TOKENS = 250_000
 CHARACTERS_PER_TOKEN = 3
 MAX_HISTORY_CHARACTERS = MAX_ESTIMATED_TOKENS * CHARACTERS_PER_TOKEN
+
+TRANSIENT_STATUS_CODES = frozenset({429, 500, 503, 504})
+RETRYABLE_NETWORK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+)
+
+logger = get_logger("gemini")
+
+
+class GeminiTransientError(RuntimeError):
+    pass
+
+
+class GeminiFatalError(RuntimeError):
+    pass
 
 
 def generate_content(
@@ -14,6 +35,7 @@ def generate_content(
     tools=None,
     tool_config=None,
     timeout=60,
+    sleep_fn=time.sleep,
 ):
     check_history_size(history)
     check_system_instruction(system_instruction)
@@ -27,14 +49,89 @@ def generate_content(
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": history,
     }
+    thinking_level = get_thinking_level()
+    if thinking_level:
+        payload["generationConfig"] = {
+            "thinkingConfig": {"thinkingLevel": thinking_level}
+        }
     if tools is not None:
         payload["tools"] = tools
     if tool_config is not None:
         payload["toolConfig"] = tool_config
 
-    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
+    delays, max_wait_seconds = get_gemini_retry_settings()
+    waited = 0
+    attempt = 0
+    while True:
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except RETRYABLE_NETWORK_ERRORS as error:
+            _retry_or_fail(
+                None,
+                error,
+                delays,
+                max_wait_seconds,
+                waited,
+                attempt,
+                sleep_fn,
+            )
+            waited += delays[min(attempt, len(delays) - 1)]
+            attempt += 1
+        except requests.exceptions.HTTPError as error:
+            status_code = error.response.status_code
+            if status_code not in TRANSIENT_STATUS_CODES:
+                raise GeminiFatalError(
+                    _describe_fatal_error(status_code, error.response)
+                ) from error
+            _retry_or_fail(
+                status_code,
+                error,
+                delays,
+                max_wait_seconds,
+                waited,
+                attempt,
+                sleep_fn,
+            )
+            waited += delays[min(attempt, len(delays) - 1)]
+            attempt += 1
+
+
+def _retry_or_fail(status_code, error, delays, max_wait_seconds, waited, attempt, sleep_fn):
+    if waited >= max_wait_seconds:
+        label = f"HTTP {status_code}" if status_code else type(error).__name__
+        raise GeminiTransientError(
+            f"Gemini request kept failing ({label}) for over "
+            f"{max_wait_seconds} seconds."
+        ) from error
+
+    delay = delays[min(attempt, len(delays) - 1)]
+    label = f"HTTP {status_code}" if status_code else type(error).__name__
+    logger.warning(
+        "🔁 Gemini request failed (%s) | retry in %ds | attempt=%d",
+        label,
+        delay,
+        attempt + 1,
+    )
+    sleep_fn(delay)
+
+
+def _describe_fatal_error(status_code, response):
+    message = _extract_error_message(response)
+    if message:
+        return f"Gemini request failed permanently (HTTP {status_code}): {message}"
+    return f"Gemini request failed permanently with HTTP status {status_code}."
+
+
+def _extract_error_message(response):
+    try:
+        error = response.json().get("error")
+    except (AttributeError, ValueError):
+        return ""
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"].strip()
+    return ""
 
 
 def get_model_reply(history, model, api_key, system_instruction, timeout=60):
