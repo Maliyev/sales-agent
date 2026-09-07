@@ -187,12 +187,18 @@ def get_function_call(data, expected_name=None):
 
 
 def get_function_call_part(data, expected_name=None):
+    parts = get_function_call_parts(data, expected_name)
+    return parts[0] if parts else None
+
+
+def get_function_call_parts(data, expected_name=None):
+    function_call_parts = []
     for part in _get_response_parts(data):
         function_call = part.get("functionCall")
         if isinstance(function_call, dict):
             if expected_name is None or function_call.get("name") == expected_name:
-                return part
-    return None
+                function_call_parts.append(part)
+    return function_call_parts
 
 
 def _get_response_parts(data):

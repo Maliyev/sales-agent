@@ -11,7 +11,7 @@ from gemini import (
     CHARACTERS_PER_TOKEN,
     generate_content,
     get_function_call,
-    get_function_call_part,
+    get_function_call_parts,
     get_function_calls,
     get_text_response,
     get_usage_metadata,
@@ -30,6 +30,9 @@ MAX_SELECTED_PRODUCTS = 10
 MAX_CUSTOMER_REPLY_LENGTH = 4000
 MAX_OPERATOR_MESSAGE_LENGTH = 2000
 MAX_CONVERSATION_TITLES = 10
+DEFAULT_CLARIFYING_QUESTION = (
+    "No matching products were found. Ask the customer to clarify what they need."
+)
 
 REQUEST_OPERATOR_DECLARATION = {
     "name": "request_operator",
@@ -208,49 +211,44 @@ def get_agent_reply(
             tools=_build_agent_tools(max_search_rounds),
         )
         decision_calls = get_function_calls(decision)
-        if len(decision_calls) > 1:
-            raise AgentError("Gemini requested multiple tools at once.")
         operator_call = get_function_call(decision, "request_operator")
-        search_part = get_function_call_part(decision, "search_products")
-        search_call = (
-            search_part["functionCall"] if search_part is not None else None
-        )
+        search_parts = get_function_call_parts(decision, "search_products")
         if operator_call is not None:
             _log_step(session_id, "DECISION", "operator requested")
             return _read_operator_request(operator_call)
-        if search_call is None:
+        if not search_parts:
             if decision_calls:
                 raise AgentError("Gemini requested an unknown tool.")
             if rounds == 0:
                 return AgentReply(get_text_response(decision))
             break
 
-        rounds += 1
-        query = _get_search_query(search_call)
-        _log_step(
-            session_id,
-            "DECISION",
-            f"search round={rounds}/{max_search_rounds} query='{query}'",
-        )
-        search_results = search_fn(query, max_results=MAX_SEARCH_RESULTS)
-        round_candidates, round_by_id = _number_candidates(
-            search_results,
-            len(candidates) + 1,
-            seen_urls,
-        )
-        candidates.extend(round_candidates)
-        candidates_by_id.update(round_by_id)
-        _log_step(
-            session_id,
-            "FOUND",
-            f"round={rounds} query='{query}' found={len(round_candidates)} "
-            f"total={len(candidates)} | {_describe_titles(round_by_id)}",
-        )
-        working_history = _append_search_turns(
-            working_history,
-            search_part,
-            round_candidates,
-        )
+        executed_searches = []
+        for search_part in search_parts:
+            rounds += 1
+            query = _get_search_query(search_part["functionCall"])
+            _log_step(
+                session_id,
+                "DECISION",
+                f"search round={rounds}/{max_search_rounds} query='{query}'",
+            )
+            search_results = search_fn(query, max_results=MAX_SEARCH_RESULTS)
+            round_candidates, round_by_id = _number_candidates(
+                search_results,
+                len(candidates) + 1,
+                seen_urls,
+            )
+            candidates.extend(round_candidates)
+            candidates_by_id.update(round_by_id)
+            _log_step(
+                session_id,
+                "FOUND",
+                f"round={rounds} query='{query}' found={len(round_candidates)} "
+                f"total={len(candidates)} | {_describe_titles(round_by_id)}",
+            )
+            executed_searches.append((search_part, round_candidates))
+
+        working_history = _append_search_turns(working_history, executed_searches)
         if rounds >= max_search_rounds:
             break
 
@@ -260,7 +258,7 @@ def get_agent_reply(
             user_text,
             [],
             True,
-            "No matching products were found. Ask the customer to clarify what they need.",
+            DEFAULT_CLARIFYING_QUESTION,
             model,
             api_key,
             final_system_instruction,
@@ -651,20 +649,20 @@ def _number_candidates(search_results, start_id=1, seen_urls=None):
     return candidates, candidates_by_id
 
 
-def _append_search_turns(working_history, function_call_part, round_candidates):
-    return working_history + [
-        {"role": "model", "parts": [function_call_part]},
+def _append_search_turns(working_history, executed_searches):
+    model_parts = [part for part, _ in executed_searches]
+    response_parts = [
         {
-            "role": "user",
-            "parts": [
-                {
-                    "functionResponse": {
-                        "name": "search_products",
-                        "response": {"results": round_candidates},
-                    }
-                }
-            ],
-        },
+            "functionResponse": {
+                "name": "search_products",
+                "response": {"results": round_candidates},
+            }
+        }
+        for _, round_candidates in executed_searches
+    ]
+    return working_history + [
+        {"role": "model", "parts": model_parts},
+        {"role": "user", "parts": response_parts},
     ]
 
 
@@ -690,9 +688,9 @@ def _read_selection(function_call, candidates_by_id):
     if any(candidate_id not in candidates_by_id for candidate_id in selected_ids):
         raise AgentError("Gemini selected a candidate ID that does not exist.")
     selected_ids = selected_ids[:MAX_SELECTED_PRODUCTS]
-    if not selected_ids and not needs_clarification:
-        raise AgentError("Gemini did not select any products.")
+    if not selected_ids:
+        needs_clarification = True
     if needs_clarification and not clarifying_question.strip():
-        raise AgentError("Gemini requested clarification without a question.")
+        clarifying_question = DEFAULT_CLARIFYING_QUESTION
 
     return selected_ids, needs_clarification, clarifying_question.strip()
