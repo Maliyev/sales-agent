@@ -16,11 +16,12 @@ DEFAULT_CONFIG = {
         "tpm_limit": 0,
         "thinking_level": "",
         "retry": {
-            "delays": [5, 15, 30, 60, 120, 240],
+            "delays": [15, 30, 60, 120, 240],
             "max_wait_seconds": 600,
         },
     },
     "limits": {
+        "max_search_rounds": 3,
         "message_rate": {
             "max_messages": 15,
             "window_seconds": 60,
@@ -127,6 +128,10 @@ def get_context_token_limit():
     return get_config()["limits"]["context_overflow"].get("context_token_limit", 0)
 
 
+def get_max_search_rounds():
+    return get_config()["limits"].get("max_search_rounds", 3)
+
+
 def _deep_copy(value):
     if isinstance(value, dict):
         return {key: _deep_copy(item) for key, item in value.items()}
@@ -182,6 +187,10 @@ def _validate_config(config):
     )
 
     message_rate = config["limits"]["message_rate"]
+    _validate_positive_int(
+        config["limits"].get("max_search_rounds"),
+        "limits.max_search_rounds",
+    )
     max_messages = message_rate.get("max_messages")
     if (
         isinstance(max_messages, bool)

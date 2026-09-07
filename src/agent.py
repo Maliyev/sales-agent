@@ -4,17 +4,21 @@ import time
 from urllib.parse import urlparse
 
 from agent_reply import AgentReply
+from app_config import get_max_search_rounds
 from app_logging import get_logger, log_conversation
 from database import DatabaseError, record_api_call
 from gemini import (
     CHARACTERS_PER_TOKEN,
     generate_content,
     get_function_call,
+    get_function_call_part,
+    get_function_calls,
     get_text_response,
     get_usage_metadata,
 )
 from product_parser import get_product_data
 from product_search import search_products
+from prompts import load_final_system_instruction
 from token_limiter import guard_session_consumption, wait_for_token_budget
 
 
@@ -46,27 +50,33 @@ REQUEST_OPERATOR_DECLARATION = {
     },
 }
 
-AGENT_TOOLS = [
-    {
-        "functionDeclarations": [
-            {
-                "name": "search_products",
-                "description": "Search elen.az for products related to the customer request.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "query": {
-                            "type": "STRING",
-                            "description": "A concise search query, at most 30 characters.",
-                        }
+def _build_agent_tools(max_search_rounds):
+    return [
+        {
+            "functionDeclarations": [
+                {
+                    "name": "search_products",
+                    "description": (
+                        "Search elen.az for products related to the customer "
+                        f"request. You can call it up to {max_search_rounds} "
+                        "times with different queries; the results of every "
+                        "search arrive as a function response."
+                    ),
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {
+                                "type": "STRING",
+                                "description": "A concise search query, at most 30 characters.",
+                            }
+                        },
+                        "required": ["query"],
                     },
-                    "required": ["query"],
                 },
-            },
-            REQUEST_OPERATOR_DECLARATION,
-        ]
-    }
-]
+                REQUEST_OPERATOR_DECLARATION,
+            ]
+        }
+    ]
 
 OPERATOR_TOOL = [{"functionDeclarations": [REQUEST_OPERATOR_DECLARATION]}]
 
@@ -124,6 +134,7 @@ def get_agent_reply(
     system_instruction,
     selection_instruction,
     response_instruction,
+    final_system_instruction=None,
     search_fn=search_products,
     product_data_fn=get_product_data,
     generate_fn=generate_content,
@@ -132,6 +143,9 @@ def get_agent_reply(
     database_path=None,
     in_reply_to_message_id=None,
 ):
+    if final_system_instruction is None:
+        final_system_instruction = load_final_system_instruction()
+    max_search_rounds = get_max_search_rounds()
     call_decision = _build_model_call(
         generate_fn,
         usage_fn,
@@ -174,41 +188,71 @@ def get_agent_reply(
             "",
             model,
             api_key,
-            system_instruction,
+            final_system_instruction,
             response_instruction,
             call_final,
+            session_id=session_id,
         )
 
-    decision = call_decision(
-        current_history,
-        model,
-        api_key,
-        system_instruction,
-        tools=AGENT_TOOLS,
-    )
+    candidates = []
+    candidates_by_id = {}
+    seen_urls = set()
+    working_history = current_history
+    rounds = 0
+    while True:
+        decision = call_decision(
+            working_history,
+            model,
+            api_key,
+            system_instruction,
+            tools=_build_agent_tools(max_search_rounds),
+        )
+        decision_calls = get_function_calls(decision)
+        if len(decision_calls) > 1:
+            raise AgentError("Gemini requested multiple tools at once.")
+        operator_call = get_function_call(decision, "request_operator")
+        search_part = get_function_call_part(decision, "search_products")
+        search_call = (
+            search_part["functionCall"] if search_part is not None else None
+        )
+        if operator_call is not None:
+            _log_step(session_id, "DECISION", "operator requested")
+            return _read_operator_request(operator_call)
+        if search_call is None:
+            if decision_calls:
+                raise AgentError("Gemini requested an unknown tool.")
+            if rounds == 0:
+                return AgentReply(get_text_response(decision))
+            break
 
-    search_call = get_function_call(decision, "search_products")
-    operator_call = get_function_call(decision, "request_operator")
-    if search_call is not None and operator_call is not None:
-        raise AgentError("Gemini requested search and operator at the same time.")
-    if operator_call is not None:
-        _log_step(session_id, "DECISION", "operator requested")
-        return _read_operator_request(operator_call)
-    if search_call is None:
-        unexpected_call = get_function_call(decision)
-        if unexpected_call is not None:
-            raise AgentError("Gemini requested an unknown tool.")
-        return AgentReply(get_text_response(decision))
-
-    query = _get_search_query(search_call)
-    _log_step(session_id, "DECISION", f"search query='{query}'")
-    search_results = search_fn(query, max_results=MAX_SEARCH_RESULTS)
-    candidates, candidates_by_id = _number_candidates(search_results)
-    _log_step(
-        session_id,
-        "FOUND",
-        f"query='{query}' found={len(candidates)} | {_describe_titles(candidates_by_id)}",
-    )
+        rounds += 1
+        query = _get_search_query(search_call)
+        _log_step(
+            session_id,
+            "DECISION",
+            f"search round={rounds}/{max_search_rounds} query='{query}'",
+        )
+        search_results = search_fn(query, max_results=MAX_SEARCH_RESULTS)
+        round_candidates, round_by_id = _number_candidates(
+            search_results,
+            len(candidates) + 1,
+            seen_urls,
+        )
+        candidates.extend(round_candidates)
+        candidates_by_id.update(round_by_id)
+        _log_step(
+            session_id,
+            "FOUND",
+            f"round={rounds} query='{query}' found={len(round_candidates)} "
+            f"total={len(candidates)} | {_describe_titles(round_by_id)}",
+        )
+        working_history = _append_search_turns(
+            working_history,
+            search_part,
+            round_candidates,
+        )
+        if rounds >= max_search_rounds:
+            break
 
     if not candidates:
         return _create_final_reply(
@@ -219,11 +263,17 @@ def get_agent_reply(
             "No matching products were found. Ask the customer to clarify what they need.",
             model,
             api_key,
-            system_instruction,
+            final_system_instruction,
             response_instruction,
-            generate_fn,
+            call_final,
+            session_id=session_id,
         )
 
+    _log_step(
+        session_id,
+        "SEARCH_DONE",
+        f"rounds={rounds} candidates={len(candidates)}",
+    )
     selection_history = _with_private_data(
         history,
         user_text,
@@ -269,9 +319,10 @@ def get_agent_reply(
         clarifying_question,
         model,
         api_key,
-        system_instruction,
+        final_system_instruction,
         response_instruction,
         call_final,
+        session_id=session_id,
     )
 
 
@@ -401,8 +452,13 @@ def _estimate_tokens(history, system_instruction):
         if not isinstance(parts, list):
             continue
         for part in parts:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                total_characters += len(part["text"])
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                total_characters += len(text)
+            elif "functionCall" in part or "functionResponse" in part:
+                total_characters += len(json.dumps(part, ensure_ascii=False))
     return total_characters // CHARACTERS_PER_TOKEN
 
 
@@ -414,9 +470,10 @@ def _create_final_reply(
     clarifying_question,
     model,
     api_key,
-    system_instruction,
+    final_system_instruction,
     response_instruction,
     generate_fn,
+    session_id=None,
 ):
     product_context = {
         "selected_products": selected_products,
@@ -433,17 +490,35 @@ def _create_final_reply(
         final_history,
         model,
         api_key,
-        f"{system_instruction}\n\n{response_instruction}",
+        f"{final_system_instruction}\n\n{response_instruction}",
         tools=OPERATOR_TOOL,
     )
     operator_call = get_function_call(response, "request_operator")
     if operator_call is not None:
         return _read_operator_request(operator_call)
 
-    unexpected_call = get_function_call(response)
-    if unexpected_call is not None:
-        raise AgentError("Gemini requested an unknown tool.")
-    return AgentReply(get_text_response(response))
+    if not get_function_calls(response):
+        return AgentReply(get_text_response(response))
+
+    try:
+        text = get_text_response(response)
+    except RuntimeError:
+        text = None
+    if text is not None:
+        _log_step(
+            session_id,
+            "FINAL_FALLBACK",
+            "unexpected tool call ignored, text reply used",
+        )
+        return AgentReply(text)
+    if needs_clarification and clarifying_question:
+        _log_step(
+            session_id,
+            "FINAL_FALLBACK",
+            "unexpected tool call ignored, clarifying question used",
+        )
+        return AgentReply(clarifying_question)
+    raise AgentError("Gemini requested an unknown tool.")
 
 
 def _with_user_message(history, user_text):
@@ -548,16 +623,22 @@ def _describe_selection(
     return detail
 
 
-def _number_candidates(search_results):
+def _number_candidates(search_results, start_id=1, seen_urls=None):
     if not isinstance(search_results, list):
         raise AgentError("Product search returned an invalid result.")
+    if seen_urls is None:
+        seen_urls = set()
 
     candidates = []
     candidates_by_id = {}
-    for candidate_id, result in enumerate(search_results, start=1):
+    for result in search_results:
         if not isinstance(result, dict) or not isinstance(result.get("url"), str):
             raise AgentError("Product search returned an invalid product.")
-
+        url = result["url"]
+        if url in seen_urls:
+            continue
+        candidate_id = start_id + len(candidates)
+        seen_urls.add(url)
         candidates_by_id[candidate_id] = result
         candidates.append(
             {
@@ -568,6 +649,23 @@ def _number_candidates(search_results):
             }
         )
     return candidates, candidates_by_id
+
+
+def _append_search_turns(working_history, function_call_part, round_candidates):
+    return working_history + [
+        {"role": "model", "parts": [function_call_part]},
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "search_products",
+                        "response": {"results": round_candidates},
+                    }
+                }
+            ],
+        },
+    ]
 
 
 def _read_selection(function_call, candidates_by_id):

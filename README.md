@@ -221,11 +221,12 @@ root (secrets stay in `.env`). Complete reference:
     "tpm_limit": 0,
     "thinking_level": "",
     "retry": {
-      "delays": [5, 15, 30, 60, 120, 240],
+      "delays": [15, 30, 60, 120, 240],
       "max_wait_seconds": 600
     }
   },
   "limits": {
+    "max_search_rounds": 3,
     "message_rate": {
       "max_messages": 15,
       "window_seconds": 60
@@ -266,6 +267,12 @@ root (secrets stay in `.env`). Complete reference:
 - `limits.message_rate` — a session is blocked after `max_messages` messages
   inside `window_seconds` (the spam guard, previously hard-coded to 15 per
   60 seconds).
+- `limits.max_search_rounds` — how many product searches the agent may run
+  inside one reply (3 by default, minimum 1). After every search the model
+  sees the accumulated results of all previous searches (with their queries)
+  and can refine the query, refer the customer to the operator, or move on to
+  product selection. When the limit is reached the best candidates so far are
+  selected; searches also stop early once the model is satisfied.
 - `limits.token_abuse` — if one session consumes more than `limit` tokens
   inside `window_seconds`, it is blocked in `blocked_sessions` exactly like a
   spam session. `0` disables it.

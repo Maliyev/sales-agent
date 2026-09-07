@@ -4,11 +4,12 @@
     "tpm_limit": 230000,
     "thinking_level": "high",
     "retry": {
-      "delays": [5, 15, 30, 60, 120, 240],
+      "delays": [15, 30, 60, 120, 240],
       "max_wait_seconds": 600
     }
   },
   "limits": {
+    "max_search_rounds": 3,
     "message_rate": { 
       "max_messages": 15,
       "window_seconds": 60

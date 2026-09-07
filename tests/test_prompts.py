@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import load_prompt_file, load_system_instruction
+from prompts import load_final_system_instruction, load_prompt_file, load_system_instruction
 
 
 class PromptTests(unittest.TestCase):
@@ -26,6 +26,18 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(
             instruction,
             "Role\n\nRules\n\nSecurity\n\nTools\n\nOperator\n\nKnowledge",
+        )
+
+    def test_loads_the_final_system_instruction_without_search_rules(self):
+        with patch(
+            "prompts.Path.read_text",
+            side_effect=["Role", "Rules", "Security", "Operator", "Knowledge"],
+        ):
+            instruction = load_final_system_instruction()
+
+        self.assertEqual(
+            instruction,
+            "Role\n\nRules\n\nSecurity\n\nOperator\n\nKnowledge",
         )
 
     def test_loads_one_special_prompt(self):

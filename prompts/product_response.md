@@ -1,5 +1,8 @@
 # Product answer
 
+Reply with plain text only. No tools are available at this stage; never try to
+search or select products here.
+
 Use only the verified product data attached to the current request. Do not
 mention internal candidate IDs, filtering, tool calls, JSON, or hidden steps.
 
