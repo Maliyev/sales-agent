@@ -13,6 +13,7 @@ from database import (
     DatabaseError,
     initialize_database,
     insert_incoming_message,
+    reset_history,
     save_model_message,
     update_messages_status,
 )
@@ -74,6 +75,12 @@ DELIVERY_FAILURE_REPLY = (
     "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
     "yenidən cəhd edin."
 )
+GREETING_REPLY = (
+    "Salam! Mən elen.az köməkçisiyəm. Məhsullar haqqında sual verə "
+    "bilərsiniz. Söhbəti silmək üçün /reset yazın."
+)
+SESSION_RESET_REPLY = "Söhbət tarixçəsi silindi."
+UNKNOWN_COMMAND_REPLY = "Naməlum əmr. Mövcud əmr: /reset"
 logger = get_logger("whatsapp")
 
 
@@ -84,6 +91,7 @@ def handle_incoming_message(
     release_fn,
     allow_fn,
     submit_fn,
+    reset_fn=None,
     read_document_fn=None,
     download_media_fn=None,
     describe_image_fn=None,
@@ -141,6 +149,15 @@ def handle_incoming_message(
                 len(user_text),
             )
         else:
+            command_handled = _handle_text_command(
+                message.text,
+                session_id,
+                message.sender_id,
+                reset_fn,
+                send_fn,
+            )
+            if command_handled:
+                return True
             user_text = message.text
             logger.info(
                 "WhatsApp message accepted | session=%s chars=%d",
@@ -152,6 +169,26 @@ def handle_incoming_message(
         release_fn(message.message_id)
         raise
 
+    return True
+
+
+def _handle_text_command(text, session_id, recipient, reset_fn, send_fn):
+    command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
+    if not command.startswith("/"):
+        return False
+    if send_fn is None:
+        raise WhatsAppError("WhatsApp command handlers are not configured.")
+    if command == "/start":
+        send_fn(recipient, GREETING_REPLY)
+        return True
+    if command == "/reset":
+        if reset_fn is None:
+            raise WhatsAppError("WhatsApp reset handler is not configured.")
+        reset_fn(session_id)
+        logger.info("🧹 WhatsApp session reset | session=%s", session_id)
+        send_fn(recipient, SESSION_RESET_REPLY)
+        return True
+    send_fn(recipient, UNKNOWN_COMMAND_REPLY)
     return True
 
 
@@ -375,6 +412,12 @@ def build_whatsapp_channel(
             lambda error: report_error(recipient, error),
         )
 
+    def clear_history(session_id):
+        coordinator.reset_session(
+            session_id,
+            lambda: reset_history(database_path, session_id),
+        )
+
     def download_document_media(media_id):
         return download_media(
             access_token,
@@ -408,6 +451,7 @@ def build_whatsapp_channel(
             lambda message_id: release_incoming_message(database_path, message_id),
             lambda session_id: is_message_allowed(database_path, session_id),
             submit_message,
+            reset_fn=clear_history,
             read_document_fn=read_document,
             download_media_fn=download_document_media,
             describe_image_fn=describe_image,

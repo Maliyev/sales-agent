@@ -458,6 +458,107 @@ class WhatsAppBotTests(unittest.TestCase):
 
         release.assert_called_once_with("wamid.img")
 
+    def test_a_reset_command_resets_the_session(self):
+        message = WhatsAppTextMessage(
+            message_id="wamid.reset",
+            sender_id="994501234567",
+            text="/reset",
+            phone_number_id="1242528055613330",
+        )
+        reset = Mock()
+        submit = Mock()
+        send = Mock()
+
+        handled = handle_incoming_message(
+            message,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            submit,
+            reset_fn=reset,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        reset.assert_called_once_with("whatsapp:994501234567")
+        self.assertIn("tarixçəsi silindi", send.call_args.args[1])
+        submit.assert_not_called()
+
+    def test_a_start_command_replies_with_a_greeting(self):
+        message = WhatsAppTextMessage(
+            message_id="wamid.start",
+            sender_id="994501234567",
+            text="/start",
+            phone_number_id="1242528055613330",
+        )
+        submit = Mock()
+        send = Mock()
+
+        handled = handle_incoming_message(
+            message,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            submit,
+            reset_fn=Mock(),
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("Salam", send.call_args.args[1])
+        submit.assert_not_called()
+
+    def test_replies_to_an_unknown_command(self):
+        message = WhatsAppTextMessage(
+            message_id="wamid.cmd",
+            sender_id="994501234567",
+            text="/help me please",
+            phone_number_id="1242528055613330",
+        )
+        submit = Mock()
+        reset = Mock()
+        send = Mock()
+
+        handled = handle_incoming_message(
+            message,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            submit,
+            reset_fn=reset,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("Naməlum əmr", send.call_args.args[1])
+        reset.assert_not_called()
+        submit.assert_not_called()
+
+    def test_raises_when_the_reset_handler_is_not_configured(self):
+        message = WhatsAppTextMessage(
+            message_id="wamid.reset",
+            sender_id="994501234567",
+            text="/reset",
+            phone_number_id="1242528055613330",
+        )
+        release = Mock()
+
+        with self.assertRaisesRegex(WhatsAppError, "not configured"):
+            handle_incoming_message(
+                message,
+                "1242528055613330",
+                Mock(return_value=True),
+                release,
+                Mock(return_value=True),
+                Mock(),
+                send_fn=Mock(),
+            )
+
+        release.assert_called_once_with("wamid.reset")
+
 
 if __name__ == "__main__":
     unittest.main()
