@@ -205,13 +205,29 @@ def _get_response_parts(data):
     try:
         parts = data["candidates"][0]["content"]["parts"]
     except (IndexError, KeyError, TypeError) as error:
-        raise RuntimeError("Gemini returned an invalid response.") from error
+        raise RuntimeError(
+            f"Gemini returned an invalid response. {_describe_response_state(data)}"
+        ) from error
 
     if not isinstance(parts, list):
         raise RuntimeError("Gemini returned an invalid response.")
     if any(not isinstance(part, dict) for part in parts):
         raise RuntimeError("Gemini returned an invalid response.")
     return parts
+
+
+def _describe_response_state(data):
+    if not isinstance(data, dict):
+        return "The response is not a JSON object."
+    candidates = data.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        candidate = candidates[0]
+        if isinstance(candidate, dict) and candidate.get("finishReason"):
+            return f"finishReason={candidate['finishReason']}."
+    feedback = data.get("promptFeedback")
+    if isinstance(feedback, dict) and feedback.get("blockReason"):
+        return f"blockReason={feedback['blockReason']}."
+    return "No candidate content was returned."
 
 
 def check_history_size(history):

@@ -12,8 +12,97 @@ A small terminal chat bot for the future elen.az sales assistant.
 - reads its instructions and store knowledge from Markdown files.
 - searches elen.az and filters several relevant product candidates.
 - reads elen.az product links sent directly by a customer.
+- processes a customer's product list item by item and reports all results at once.
 - permanently blocks a session that sends more than 15 messages in 60 seconds.
 - can explicitly refer a customer to a human operator.
+
+## Architecture (as of September 8, 2026)
+
+What happens when a customer message arrives:
+
+```text
+Telegram / WhatsApp / terminal / admin dashboard
+        │  incoming messages (polling or webhook)
+        ▼
+Channel adapters (telegram_bot.py, whatsapp_bot.py, main.py)
+        │  SessionCoordinator.submit(session_id, text)
+        ▼
+SessionCoordinator (session_coordinator.py)
+        │  message_service.generate_customer_reply (message_service.py)
+        ▼
+agent.get_agent_reply (agent.py) — the three-stage Gemini pipeline
+        │
+        ▼
+AgentReply → saved to SQLite → sent back through the channel
+```
+
+**Session queue** (`session_coordinator.py`). One worker thread per session
+(6 workers in the full runner), so messages of one session never interleave.
+The worker waits one second (debounce) and merges message bursts into a single
+combined request. A spam guard permanently blocks a session that sends more
+than 15 messages per minute.
+
+**History and context** (`message_service.py`). The reply flow loads the
+session history from SQLite. If the history no longer fits the context limit,
+the request first triggers auto-compaction (a separate model summarizes the
+oldest turns and replaces them; every session keeps its own summary in the
+database) or, as a fallback, auto-resets the conversation.
+
+**Stage 1 — decision** (0..N Gemini calls). Context: the full system
+instruction (`prompts/01_role.md`, `02_response_rules.md`,
+`03_security_rules.md`, `04_product_tools.md`, `05_operator.md` plus
+`knowledge/store.md`), the persistent chat history, and the current user
+message. Tools: `search_products` (searches the elen.az catalog) and
+`request_operator` (hands the chat to a human). For simple questions the model
+answers with plain text and no tool call. For product questions it searches up
+to `limits.max_search_rounds` times (default 3); the numbered candidates of
+every round (id, title, price, currency) are appended to its context as
+function results, so each next query can build on the previous ones (English
+queries first, Russian keywords as a second attempt). If the model emits
+several `search_products` calls in one turn, all of them are executed in that
+turn and answered together.
+
+**Stage 2 — selection** (1 Gemini call). Context: the same base instruction
+plus `prompts/product_selection.md` and all accumulated candidates as
+temporary private data. A forced function call `select_product_candidates`
+returns up to 10 relevant candidate IDs, a `needs_clarification` flag, and one
+clarifying question. An empty selection is treated as a clarification request,
+never as a crash.
+
+**Stage 3 — final answer** (1 Gemini call). Context: the system instruction
+without the search rules (`04_product_tools.md` is excluded), plus
+`prompts/product_response.md`, the chat history, and the verified product
+data: the fully parsed elen.az pages of the selected products (price, stock,
+variants). Tool: `request_operator` only. This call writes the customer-facing
+text; if it wrongly tries to search here, the code degrades to its plain text
+or the clarifying question instead of failing.
+
+**Shortcut.** elen.az product links inside the customer message skip stages
+1–2 entirely: the pages are parsed directly and handed to the final stage.
+
+**Product lists.** When the decision stage sees a list of several products to
+check, it calls `start_product_list(count)` before any search. The code then
+restarts the full pipeline once per list item: the decision stage gets an
+addendum (`prompts/product_list_decision.md`) naming the current item and its
+number, searches run as usual (up to `limits.max_search_rounds` per item),
+and the final stage writes a 1–2 sentence internal note instead of a customer
+reply (`prompts/product_list_item_response.md`). Each note lands in an
+in-memory cache; after the last item one extra final call with
+`prompts/product_list_report.md` turns all notes into a single customer
+report. The whole list lives inside one `generate_customer_reply` turn, is
+capped by `limits.max_api_calls_per_reply` (the report call is always
+reserved), and a list that ends early still gets a partial report.
+
+**Every Gemini call** goes through a token estimate, a per-minute TPM limiter
+(over-budget requests wait for the next minute window instead of failing), the
+API call itself (usage recorded in the `api_calls` table per purpose:
+decision / selection / final / compaction), and a per-session consumption
+guard that blocks sessions burning too many tokens too fast.
+
+**Reply path.** The final text (and, when the agent escalated to a human, an
+operator note) is saved with status `RESPONSE_READY`, delivered through the
+same channel adapter, and marked `DELIVERED` or `FAILED_DELIVERY`. Each step
+is mirrored to `data/logs/conversations.log` and the rotating ops log.
 
 ## Setup
 
@@ -227,6 +316,7 @@ root (secrets stay in `.env`). Complete reference:
   },
   "limits": {
     "max_search_rounds": 3,
+    "max_api_calls_per_reply": 70,
     "message_rate": {
       "max_messages": 15,
       "window_seconds": 60
@@ -273,6 +363,15 @@ root (secrets stay in `.env`). Complete reference:
   and can refine the query, refer the customer to the operator, or move on to
   product selection. When the limit is reached the best candidates so far are
   selected; searches also stop early once the model is satisfied.
+- `limits.max_api_calls_per_reply` — the maximum number of Gemini calls a
+  single reply may consume across all stages (70 by default). A regular
+  reply needs at most 6 calls (up to 3 searches, selection, final), so the
+  limit only matters for product lists: a list of 10 items costs roughly
+  20–60 calls plus one extra report call. When the budget runs out
+  mid-list, the agent stops early and still delivers a partial report.
+- `limits.list_mode_enabled` — the experimental product list feature
+  (`true` by default). `false` removes the `start_product_list` tool from
+  the decision stage entirely, so the agent never enters list mode.
 - `limits.token_abuse` — if one session consumes more than `limit` tokens
   inside `window_seconds`, it is blocked in `blocked_sessions` exactly like a
   spam session. `0` disables it.

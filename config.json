@@ -10,6 +10,8 @@
   },
   "limits": {
     "max_search_rounds": 3,
+    "max_api_calls_per_reply": 70,
+    "list_mode_enabled": true,
     "message_rate": { 
       "max_messages": 15,
       "window_seconds": 60

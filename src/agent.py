@@ -1,11 +1,16 @@
 import json
 import re
 import time
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from agent_reply import AgentReply
-from app_config import get_max_search_rounds
-from app_logging import get_logger, log_conversation
+from app_config import (
+    get_list_mode_enabled,
+    get_max_api_calls_per_reply,
+    get_max_search_rounds,
+)
+from app_logging import flatten_text, get_logger, log_conversation
 from database import DatabaseError, record_api_call
 from gemini import (
     CHARACTERS_PER_TOKEN,
@@ -18,7 +23,7 @@ from gemini import (
 )
 from product_parser import get_product_data
 from product_search import search_products
-from prompts import load_final_system_instruction
+from prompts import load_final_system_instruction, load_list_mode_addenda
 from token_limiter import guard_session_consumption, wait_for_token_budget
 
 
@@ -53,33 +58,51 @@ REQUEST_OPERATOR_DECLARATION = {
     },
 }
 
-def _build_agent_tools(max_search_rounds):
-    return [
+PRODUCT_LIST_START_DECLARATION = {
+    "name": "start_product_list",
+    "description": (
+        "Start processing a customer's product list. Call it immediately, "
+        "before any searches, when the customer message lists several "
+        "products to check (at most 10 items per reply)."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "count": {
+                "type": "INTEGER",
+                "description": "How many products the customer's list contains.",
+            }
+        },
+        "required": ["count"],
+    },
+}
+
+def _build_agent_tools(max_search_rounds, allow_list_start):
+    declarations = [
         {
-            "functionDeclarations": [
-                {
-                    "name": "search_products",
-                    "description": (
-                        "Search elen.az for products related to the customer "
-                        f"request. You can call it up to {max_search_rounds} "
-                        "times with different queries; the results of every "
-                        "search arrive as a function response."
-                    ),
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "query": {
-                                "type": "STRING",
-                                "description": "A concise search query, at most 30 characters.",
-                            }
-                        },
-                        "required": ["query"],
-                    },
+            "name": "search_products",
+            "description": (
+                "Search elen.az for products related to the customer "
+                f"request. You can call it up to {max_search_rounds} "
+                "times with different queries; the results of every "
+                "search arrive as a function response."
+            ),
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "query": {
+                        "type": "STRING",
+                        "description": "A concise search query, at most 30 characters.",
+                    }
                 },
-                REQUEST_OPERATOR_DECLARATION,
-            ]
-        }
+                "required": ["query"],
+            },
+        },
+        REQUEST_OPERATOR_DECLARATION,
     ]
+    if allow_list_start:
+        declarations.append(PRODUCT_LIST_START_DECLARATION)
+    return [{"functionDeclarations": declarations}]
 
 OPERATOR_TOOL = [{"functionDeclarations": [REQUEST_OPERATOR_DECLARATION]}]
 
@@ -129,6 +152,15 @@ class AgentError(RuntimeError):
     pass
 
 
+class BudgetExceededError(RuntimeError):
+    pass
+
+
+@dataclass
+class StartListRequest:
+    count: int
+
+
 def get_agent_reply(
     history,
     user_text,
@@ -173,8 +205,9 @@ def get_agent_reply(
         session_id,
         "final",
     )
+    budget = {"used": 0, "limit": get_max_api_calls_per_reply()}
+    list_addenda = load_list_mode_addenda()
 
-    current_history = _with_user_message(history, user_text)
     product_urls = _extract_product_urls(user_text)
     if product_urls:
         _log_step(
@@ -182,6 +215,7 @@ def get_agent_reply(
             "DIRECT_LINKS",
             f"count={len(product_urls)} | {'; '.join(product_urls)}",
         )
+        _spend_budget(budget)
         selected_products = [product_data_fn(url) for url in product_urls]
         return _create_final_reply(
             history,
@@ -197,25 +231,187 @@ def get_agent_reply(
             session_id=session_id,
         )
 
+    pipeline_args = (
+        history,
+        user_text,
+        model,
+        api_key,
+        system_instruction,
+        selection_instruction,
+        response_instruction,
+        final_system_instruction,
+        max_search_rounds,
+        search_fn,
+        product_data_fn,
+        call_decision,
+        call_selection,
+        call_final,
+        session_id,
+        budget,
+        list_addenda,
+    )
+    reply = _run_pipeline(*pipeline_args)
+    if not isinstance(reply, StartListRequest):
+        return reply
+
+    total = reply.count
+    _log_step(session_id, "LIST_START", f"total={total}")
+    item_notes = []
+    for item in range(1, total + 1):
+        if budget["used"] >= budget["limit"] - 1:
+            _log_step(
+                session_id,
+                "LIST_ITEM",
+                f"item={item}/{total} skipped reason=budget",
+            )
+            break
+        try:
+            reply = _run_pipeline(
+                *pipeline_args,
+                list_ctx={"current": item, "total": total},
+            )
+        except BudgetExceededError:
+            _log_step(
+                session_id,
+                "LIST_ITEM",
+                f"item={item}/{total} stopped reason=budget",
+            )
+            break
+        except AgentError:
+            raise
+        except RuntimeError as error:
+            item_notes.append(
+                {"item": item, "result": "This item could not be verified."}
+            )
+            _log_step(
+                session_id,
+                "LIST_ITEM",
+                f"item={item}/{total} failed reason={_describe_error(error)}",
+            )
+            continue
+        if reply.operator_message:
+            item_notes.append(
+                {"item": item, "result": "Passed to a human operator."}
+            )
+            _log_step(
+                session_id,
+                "OPERATOR_NOTE",
+                f"list item={item}/{total} | {reply.operator_message}",
+            )
+            continue
+        item_notes.append({"item": item, "result": reply.customer_reply})
+        _log_step(
+            session_id,
+            "LIST_ITEM",
+            f"item={item}/{total} | {flatten_text(reply.customer_reply)}",
+        )
+
+    budget["used"] += 1
+    _log_step(
+        session_id,
+        "LIST_REPORT",
+        f"processed={len(item_notes)}/{total}",
+    )
+    return _create_final_reply(
+        history,
+        user_text,
+        [],
+        False,
+        "",
+        model,
+        api_key,
+        final_system_instruction,
+        f"{response_instruction}\n\n{list_addenda['report']}",
+        call_final,
+        session_id=session_id,
+        list_results={
+            "processed": len(item_notes),
+            "total": total,
+            "items": item_notes,
+        },
+    )
+
+
+def _run_pipeline(
+    history,
+    user_text,
+    model,
+    api_key,
+    system_instruction,
+    selection_instruction,
+    response_instruction,
+    final_system_instruction,
+    max_search_rounds,
+    search_fn,
+    product_data_fn,
+    call_decision,
+    call_selection,
+    call_final,
+    session_id,
+    budget,
+    list_addenda,
+    list_ctx=None,
+):
+    current_history = _with_user_message(history, user_text)
+    if list_ctx is None:
+        decision_instruction = system_instruction
+        decision_tools = _build_agent_tools(
+            max_search_rounds,
+            get_list_mode_enabled(),
+        )
+        item_response_instruction = response_instruction
+        item_selection_instruction = selection_instruction
+    else:
+        decision_instruction = (
+            f"{system_instruction}\n\n"
+            + _render_list_addendum(
+                list_addenda["decision"],
+                list_ctx["current"],
+                list_ctx["total"],
+            )
+        )
+        decision_tools = _build_agent_tools(max_search_rounds, False)
+        item_response_instruction = _render_list_addendum(
+            list_addenda["item_response"],
+            list_ctx["current"],
+            list_ctx["total"],
+        )
+        item_selection_instruction = (
+            f"{system_instruction}\n\n{selection_instruction}\n\n"
+            + _render_list_addendum(
+                list_addenda["selection"],
+                list_ctx["current"],
+                list_ctx["total"],
+            )
+        )
+
     candidates = []
     candidates_by_id = {}
     seen_urls = set()
     working_history = current_history
     rounds = 0
     while True:
+        _spend_budget(budget, list_ctx)
         decision = call_decision(
             working_history,
             model,
             api_key,
-            system_instruction,
-            tools=_build_agent_tools(max_search_rounds),
+            decision_instruction,
+            tools=decision_tools,
         )
         decision_calls = get_function_calls(decision)
         operator_call = get_function_call(decision, "request_operator")
+        list_start_call = (
+            get_function_call(decision, "start_product_list")
+            if list_ctx is None and get_list_mode_enabled()
+            else None
+        )
         search_parts = get_function_call_parts(decision, "search_products")
         if operator_call is not None:
             _log_step(session_id, "DECISION", "operator requested")
             return _read_operator_request(operator_call)
+        if list_start_call is not None:
+            return _read_list_start(list_start_call)
         if not search_parts:
             if decision_calls:
                 raise AgentError("Gemini requested an unknown tool.")
@@ -253,6 +449,7 @@ def get_agent_reply(
             break
 
     if not candidates:
+        _spend_budget(budget, list_ctx)
         return _create_final_reply(
             history,
             user_text,
@@ -262,7 +459,7 @@ def get_agent_reply(
             model,
             api_key,
             final_system_instruction,
-            response_instruction,
+            item_response_instruction,
             call_final,
             session_id=session_id,
         )
@@ -278,11 +475,12 @@ def get_agent_reply(
         "Temporary search candidates",
         candidates,
     )
+    _spend_budget(budget, list_ctx)
     selection = call_selection(
         selection_history,
         model,
         api_key,
-        f"{system_instruction}\n\n{selection_instruction}",
+        item_selection_instruction,
         tools=SELECTION_TOOL,
         tool_config=FORCE_SELECTION_TOOL,
     )
@@ -309,6 +507,7 @@ def get_agent_reply(
         for candidate_id in selected_ids
     ]
 
+    _spend_budget(budget, list_ctx)
     return _create_final_reply(
         history,
         user_text,
@@ -318,7 +517,7 @@ def get_agent_reply(
         model,
         api_key,
         final_system_instruction,
-        response_instruction,
+        item_response_instruction,
         call_final,
         session_id=session_id,
     )
@@ -472,17 +671,23 @@ def _create_final_reply(
     response_instruction,
     generate_fn,
     session_id=None,
+    list_results=None,
 ):
-    product_context = {
-        "selected_products": selected_products,
-        "needs_clarification": needs_clarification,
-        "clarifying_question": clarifying_question,
-    }
+    if list_results is not None:
+        private_label = "List processing results"
+        private_data = list_results
+    else:
+        private_label = "Verified product data"
+        private_data = {
+            "selected_products": selected_products,
+            "needs_clarification": needs_clarification,
+            "clarifying_question": clarifying_question,
+        }
     final_history = _with_private_data(
         history,
         user_text,
-        "Verified product data",
-        product_context,
+        private_label,
+        private_data,
     )
     response = generate_fn(
         final_history,
@@ -583,6 +788,31 @@ def _read_operator_request(function_call):
         raise AgentError("Gemini returned an operator message that is too long.")
 
     return AgentReply(customer_reply, operator_message)
+
+
+def _read_list_start(function_call):
+    args = function_call.get("args")
+    if not isinstance(args, dict):
+        raise AgentError("Gemini returned an invalid product list request.")
+    count = args.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise AgentError("Gemini declared an invalid product list.")
+    return StartListRequest(count)
+
+
+def _spend_budget(budget, list_ctx=None):
+    budget["used"] += 1
+    if budget["used"] <= budget["limit"]:
+        return
+    if list_ctx is None:
+        raise AgentError("Gemini reply exceeded the API call budget.")
+    raise BudgetExceededError("Gemini reply exceeded the API call budget.")
+
+
+def _render_list_addendum(text, current, total):
+    return text.replace("__CURRENT_ITEM__", str(current)).replace(
+        "__TOTAL_ITEMS__", str(total)
+    )
 
 
 def _log_step(session_id, event, detail):

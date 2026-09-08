@@ -50,6 +50,20 @@ class FakeGemini:
         return self.responses.pop(0)
 
 
+class FlakyGemini(FakeGemini):
+    def __init__(self, responses, fail_index):
+        super().__init__(responses)
+        self.fail_index = fail_index
+        self.call_index = 0
+
+    def __call__(self, *args, **kwargs):
+        index = self.call_index
+        self.call_index += 1
+        if index == self.fail_index:
+            raise RuntimeError("Gemini returned an invalid response.")
+        return super().__call__(*args, **kwargs)
+
+
 class AgentTests(unittest.TestCase):
     def setUp(self):
         set_config({"limits": {"max_search_rounds": 3}})
@@ -90,6 +104,7 @@ class AgentTests(unittest.TestCase):
         search_fn=None,
         product_data_fn=None,
         final_system_instruction=None,
+        user_text="At least 200 volts",
     ):
         if search_fn is None:
             search_fn = lambda query, max_results: self.results
@@ -98,7 +113,7 @@ class AgentTests(unittest.TestCase):
 
         return get_agent_reply(
             self.history,
-            "At least 200 volts",
+            user_text,
             "model",
             "key",
             "base prompt",
@@ -969,6 +984,232 @@ class AgentTests(unittest.TestCase):
                 gemini,
                 search_fn=lambda query, max_results: self.results,
             )
+
+    def test_disabled_list_mode_hides_the_start_tool(self):
+        set_config(
+            {
+                "limits": {
+                    "max_search_rounds": 3,
+                    "list_mode_enabled": False,
+                }
+            }
+        )
+        gemini = FakeGemini(
+            [function_response("start_product_list", {"count": 2})]
+        )
+
+        with self.assertRaisesRegex(AgentError, "unknown tool"):
+            self.call_agent(
+                gemini,
+                user_text="Please check: 1) diode 2) relay",
+            )
+        declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in declarations],
+            ["search_products", "request_operator"],
+        )
+
+    def test_product_list_runs_a_full_pipeline_per_item(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("The first search found the diode."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Found diode 1N4007 for 0.1 AZN."),
+                text_response("No relay matches in the catalog."),
+                text_response("Full report below."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Full report below."))
+        self.assertEqual(len(gemini.calls), 7)
+        start_declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in start_declarations],
+            ["search_products", "request_operator", "start_product_list"],
+        )
+        item1_system = gemini.calls[1]["system_instruction"]
+        self.assertIn("`2` items in total", item1_system)
+        self.assertIn("working on item `1`", item1_system)
+        item1_declarations = gemini.calls[1]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in item1_declarations],
+            ["search_products", "request_operator"],
+        )
+        item1_selection_system = gemini.calls[3]["system_instruction"]
+        self.assertIn("base prompt", item1_selection_system)
+        self.assertIn("selection prompt", item1_selection_system)
+        self.assertIn(
+            "covers ONLY the current item",
+            item1_selection_system,
+        )
+        item1_final_system = gemini.calls[4]["system_instruction"]
+        self.assertIn("final system prompt", item1_final_system)
+        self.assertIn("will NOT be seen by the customer", item1_final_system)
+        self.assertIn("`1` of `2`", item1_final_system)
+        self.assertNotIn("response prompt", item1_final_system)
+        item2_system = gemini.calls[5]["system_instruction"]
+        self.assertIn("working on item `2`", item2_system)
+        report_call = gemini.calls[6]
+        self.assertIn("response prompt", report_call["system_instruction"])
+        self.assertIn(
+            "combined reply for the customer",
+            report_call["system_instruction"],
+        )
+        report_text = report_call["history"][-1]["parts"][0]["text"]
+        self.assertIn("List processing results", report_text)
+        self.assertIn('"processed":2', report_text)
+        self.assertIn('"total":2', report_text)
+        self.assertIn(
+            '"item":1,"result":"Found diode 1N4007 for 0.1 AZN."',
+            report_text,
+        )
+        self.assertIn(
+            '"item":2,"result":"No relay matches in the catalog."',
+            report_text,
+        )
+
+    def test_product_list_rejects_an_invalid_count(self):
+        invalid_counts = [0, -3, "2", 1.5, None, True]
+        for count in invalid_counts:
+            with self.subTest(count=count):
+                gemini = FakeGemini(
+                    [function_response("start_product_list", {"count": count})]
+                )
+
+                with self.assertRaises(AgentError):
+                    self.call_agent(
+                        gemini,
+                        user_text="Please check: 1) diode 2) relay",
+                    )
+
+    def test_product_list_stops_on_budget_and_reports_processed_items(self):
+        set_config(
+            {
+                "limits": {
+                    "max_search_rounds": 1,
+                    "max_api_calls_per_reply": 6,
+                }
+            }
+        )
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 3}),
+                function_response("search_products", {"query": "item one"}),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("One: found."),
+                function_response("search_products", {"query": "item two"}),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Partial report."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) 2) 3)",
+        )
+
+        self.assertEqual(reply, AgentReply("Partial report."))
+        self.assertEqual(len(gemini.calls), 7)
+        report_text = gemini.calls[6]["history"][-1]["parts"][0]["text"]
+        self.assertIn('"processed":1', report_text)
+        self.assertIn('"total":3', report_text)
+        self.assertIn('"item":1,"result":"One: found."', report_text)
+        self.assertNotIn('"item":2', report_text)
+
+    def test_product_list_notes_an_operator_item_and_continues(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "I will check with the operator.",
+                        "operator_message": "Item 1 needs a human.",
+                    },
+                ),
+                text_response("Second item found."),
+                text_response("Report with operator note."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) custom cable 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Report with operator note."))
+        self.assertEqual(len(gemini.calls), 4)
+        report_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertIn(
+            '"item":1,"result":"Passed to a human operator."', report_text
+        )
+        self.assertIn(
+            '"item":2,"result":"Second item found."', report_text
+        )
+
+    def test_product_list_keeps_going_after_a_broken_api_response(self):
+        gemini = FlakyGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                text_response("Second item found."),
+                text_response("Report despite the failure."),
+            ],
+            fail_index=1,
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Report despite the failure."))
+        self.assertEqual(len(gemini.calls), 3)
+        report_text = gemini.calls[2]["history"][-1]["parts"][0]["text"]
+        self.assertIn(
+            '"item":1,"result":"This item could not be verified."',
+            report_text,
+        )
+        self.assertIn(
+            '"item":2,"result":"Second item found."', report_text
+        )
 
 
 class EstimateTokensTests(unittest.TestCase):

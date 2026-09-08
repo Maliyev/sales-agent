@@ -146,6 +146,9 @@ EVENT_EMOJI = {
     "MODEL": "🤖",
     "OPERATOR_NOTE": "❗",
     "MANUAL": "📝",
+    "LIST_START": "📋",
+    "LIST_ITEM": "🔹",
+    "LIST_REPORT": "📄",
 }
 
 
