@@ -105,7 +105,11 @@ class WhatsAppClientTests(unittest.TestCase):
         second_url = session.get.call_args_list[1].args[0]
         self.assertEqual(
             first_url,
-            "https://graph.facebook.com/v25.0/1242528055613330/media/media-9",
+            "https://graph.facebook.com/v25.0/media-9",
+        )
+        self.assertEqual(
+            session.get.call_args_list[0].kwargs["params"],
+            {"phone_number_id": "1242528055613330"},
         )
         self.assertEqual(second_url, "https://lookaside.fbsbx.com/media-9")
         self.assertEqual(
