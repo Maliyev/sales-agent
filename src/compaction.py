@@ -106,7 +106,7 @@ def compact_history(
     log_conversation(
         session_id,
         "SYSTEM",
-        f"Context compacted: {len(rows)} messages replaced with a summary.",
+        f"Context compacted: {len(rows)} messages replaced with a summary:\n{summary}",
     )
 
 
