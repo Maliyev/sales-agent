@@ -15,6 +15,16 @@ class WhatsAppTextMessage:
     phone_number_id: str | None = None
 
 
+@dataclass(frozen=True)
+class WhatsAppDocumentMessage:
+    message_id: str
+    sender_id: str
+    media_id: str
+    filename: str
+    caption: str | None = None
+    phone_number_id: str | None = None
+
+
 def get_verification_challenge(query, expected_token):
     if not isinstance(expected_token, str) or not expected_token:
         raise WhatsAppWebhookError("Webhook verify token is not configured.")
@@ -47,7 +57,7 @@ def is_valid_signature(raw_body, signature_header, app_secret):
     return hmac.compare_digest(expected, signature_header)
 
 
-def parse_text_messages(payload):
+def parse_messages(payload):
     if not isinstance(payload, dict):
         raise WhatsAppWebhookError("Webhook payload must be a JSON object.")
     if payload.get("object") != "whatsapp_business_account":
@@ -73,13 +83,56 @@ def parse_text_messages(payload):
                     phone_number_id = candidate
 
             for message in _as_list(value.get("messages")):
-                parsed = _parse_text_message(message, phone_number_id)
+                parsed = _parse_message(message, phone_number_id)
                 if parsed is None or parsed.message_id in seen_ids:
                     continue
                 seen_ids.add(parsed.message_id)
                 parsed_messages.append(parsed)
 
     return parsed_messages
+
+
+def _parse_message(message, phone_number_id):
+    if message.get("type") == "text":
+        return _parse_text_message(message, phone_number_id)
+    if message.get("type") == "document":
+        return _parse_document_message(message, phone_number_id)
+    return None
+
+
+def _parse_document_message(message, phone_number_id):
+    if message.get("type") != "document":
+        return None
+
+    message_id = message.get("id")
+    sender_id = message.get("from")
+    document = message.get("document")
+    document_data = document if isinstance(document, dict) else {}
+    media_id = document_data.get("id")
+    filename = document_data.get("filename")
+    caption = document_data.get("caption")
+
+    if not isinstance(message_id, str) or not message_id:
+        return None
+    if not isinstance(sender_id, str) or not sender_id:
+        return None
+    if not isinstance(media_id, str) or not media_id.strip():
+        return None
+    if not isinstance(filename, str) or not filename.strip():
+        return None
+
+    return WhatsAppDocumentMessage(
+        message_id=message_id,
+        sender_id=sender_id,
+        media_id=media_id.strip(),
+        filename=filename.strip(),
+        caption=(
+            caption.strip()
+            if isinstance(caption, str) and caption.strip()
+            else None
+        ),
+        phone_number_id=phone_number_id,
+    )
 
 
 def _parse_text_message(message, phone_number_id):

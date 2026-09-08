@@ -13,6 +13,7 @@ A small terminal chat bot for the future elen.az sales assistant.
 - searches elen.az and filters several relevant product candidates.
 - reads elen.az product links sent directly by a customer.
 - processes a customer's product list item by item and reports all results at once.
+- converts attached Excel (.xlsx) and Word (.docx) documents into text and feeds it to the agent.
 - permanently blocks a session that sends more than 15 messages in 60 seconds.
 - can explicitly refer a customer to a human operator.
 
@@ -92,6 +93,19 @@ in-memory cache; after the last item one extra final call with
 report. The whole list lives inside one `generate_customer_reply` turn, is
 capped by `limits.max_api_calls_per_reply` (the report call is always
 reserved), and a list that ends early still gets a partial report.
+
+**Document attachments.** Telegram (`message.document`) and WhatsApp
+(`type: "document"`) attachments with an `.xlsx` or `.docx` extension are
+downloaded by the channel adapter (max 5 MB) and converted to plain text by
+`document_reader.py`: Excel sheets become tab-separated rows (one section per
+sheet, cached formula values via openpyxl), Word paragraphs and tables keep
+their document order (stdlib ZIP + XML parsing). The extractor caps the text
+at 40 000 characters with a truncation notice. The converted text is wrapped
+in a system note ("The customer sent a document ..., the system converted it
+to plain text below"), stored as the incoming message, and processed like a
+regular customer text — so a product table inside an attachment automatically
+triggers list mode. Unsupported formats (`.pdf`, legacy `.doc`/`.xls`, images)
+get a friendly reply asking for `.xlsx`/`.docx`.
 
 **Every Gemini call** goes through a token estimate, a per-minute TPM limiter
 (over-budget requests wait for the next minute window instead of failing), the

@@ -2,6 +2,8 @@ import re
 
 import requests
 
+from document_reader import MAX_DOCUMENT_FILE_SIZE
+
 
 DEFAULT_TIMEOUT_SECONDS = 15
 MAX_TEXT_LENGTH = 4096
@@ -9,6 +11,56 @@ MAX_TEXT_LENGTH = 4096
 
 class WhatsAppError(RuntimeError):
     pass
+
+
+def download_media(
+    access_token,
+    phone_number_id,
+    media_id,
+    api_version="v25.0",
+    session=requests,
+):
+    access_token = _require_text(access_token, "access token")
+    phone_number_id = _require_digits(phone_number_id, "phone number ID")
+    media_id = _require_text(media_id, "media ID")
+    api_version = _validate_api_version(api_version)
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = (
+        f"https://graph.facebook.com/{api_version}/"
+        f"{phone_number_id}/media/{media_id}"
+    )
+
+    try:
+        response = session.get(
+            url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError) as error:
+        raise WhatsAppError("WhatsApp media request failed.") from error
+
+    download_url = data.get("url") if isinstance(data, dict) else None
+    if not isinstance(download_url, str) or not download_url:
+        raise WhatsAppError("WhatsApp returned an invalid media response.")
+
+    try:
+        file_response = session.get(
+            download_url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+        )
+        file_response.raise_for_status()
+    except requests.RequestException as error:
+        raise WhatsAppError("WhatsApp media download failed.") from error
+
+    if len(file_response.content) > MAX_DOCUMENT_FILE_SIZE:
+        raise WhatsAppError(
+            f"WhatsApp media is larger than {MAX_DOCUMENT_FILE_SIZE} bytes."
+        )
+    return file_response.content
 
 
 def send_text_message(

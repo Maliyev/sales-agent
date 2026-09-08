@@ -19,6 +19,13 @@ from database import (
     save_model_message,
     update_messages_status,
 )
+from document_reader import (
+    MAX_DOCUMENT_FILE_SIZE,
+    DocumentReadError,
+    build_document_user_text,
+    extract_document_text,
+    is_supported_document,
+)
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
@@ -34,6 +41,24 @@ CONVERSATION_LOG_PATH = (
 )
 POLL_TIMEOUT_SECONDS = 25
 MAX_MESSAGE_LENGTH = 4000
+TEXT_ONLY_REPLY = (
+    "Hazırda yalnız mətn mesajlarını və .xlsx/.docx sənədlərini "
+    "oxuya bilirəm."
+)
+UNSUPPORTED_DOCUMENT_REPLY = (
+    "Bu fayl formatını oxuya bilmirəm. Zəhmət olmasa .xlsx və ya "
+    ".docx formatında göndərin."
+)
+UNREADABLE_DOCUMENT_REPLY = (
+    "Sənədi oxuya bilmirəm. Zəhmət olmasa faylı yenidən göndərin."
+)
+OVERSIZED_DOCUMENT_REPLY = (
+    "Fayl çox böyükdür. Zəhmət olmasa 5 MB-dan kiçik fayl göndərin."
+)
+DELIVERY_FAILURE_REPLY = (
+    "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
+    "yenidən cəhd edin."
+)
 logger = get_logger("telegram")
 
 
@@ -81,7 +106,15 @@ def split_message(text):
     ]
 
 
-def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
+def handle_update(
+    update,
+    submit_fn,
+    reset_fn,
+    send_fn,
+    allow_fn=None,
+    download_document_fn=None,
+    read_document_fn=None,
+):
     if not isinstance(update, dict):
         return
 
@@ -96,9 +129,23 @@ def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
     if isinstance(chat_id, bool) or not isinstance(chat_id, int):
         return
 
+    document = message.get("document")
+    if isinstance(document, dict):
+        _handle_document_message(
+            message,
+            document,
+            chat_id,
+            submit_fn,
+            send_fn,
+            allow_fn,
+            download_document_fn,
+            read_document_fn,
+        )
+        return
+
     text = message.get("text")
     if not isinstance(text, str) or not text.strip():
-        send_fn(chat_id, "Hazırda yalnız mətn mesajlarını oxuya bilirəm.")
+        send_fn(chat_id, TEXT_ONLY_REPLY)
         return
 
     text = text.strip()
@@ -134,6 +181,114 @@ def handle_update(update, submit_fn, reset_fn, send_fn, allow_fn=None):
         return
 
     submit_fn(session_id, text, chat_id)
+
+
+def _handle_document_message(
+    message,
+    document,
+    chat_id,
+    submit_fn,
+    send_fn,
+    allow_fn,
+    download_document_fn,
+    read_document_fn,
+):
+    session_id = f"telegram:{chat_id}"
+    if allow_fn is not None and not allow_fn(session_id):
+        logger.warning(
+            "🚫 Telegram session blocked by message guard | session=%s",
+            session_id,
+        )
+        return
+
+    file_name = document.get("file_name")
+    if not isinstance(file_name, str) or not file_name.strip():
+        file_name = "document"
+
+    if not is_supported_document(file_name):
+        logger.info(
+            "➖ Ignored unsupported Telegram document | filename=%s",
+            file_name,
+        )
+        send_fn(chat_id, UNSUPPORTED_DOCUMENT_REPLY)
+        return
+
+    if _is_oversized_document(document.get("file_size")):
+        send_fn(chat_id, OVERSIZED_DOCUMENT_REPLY)
+        return
+
+    file_id = document.get("file_id")
+    if not isinstance(file_id, str) or not file_id:
+        send_fn(chat_id, UNREADABLE_DOCUMENT_REPLY)
+        return
+
+    try:
+        data = download_document_fn(file_id)
+    except (TelegramError, requests.RequestException) as error:
+        logger.error(
+            "❌ Could not download Telegram document | filename=%s error=%s",
+            file_name,
+            error,
+        )
+        send_fn(chat_id, DELIVERY_FAILURE_REPLY)
+        return
+
+    if _is_oversized_document(len(data)):
+        send_fn(chat_id, OVERSIZED_DOCUMENT_REPLY)
+        return
+
+    try:
+        extracted_text = read_document_fn(file_name, data)
+    except DocumentReadError as error:
+        logger.warning(
+            "📄 Could not read Telegram document | filename=%s error=%s",
+            file_name,
+            error,
+        )
+        send_fn(chat_id, UNREADABLE_DOCUMENT_REPLY)
+        return
+
+    user_text = build_document_user_text(
+        file_name,
+        extracted_text,
+        message.get("caption"),
+    )
+    logger.info(
+        "📄 Telegram document accepted | session=%s filename=%s chars=%d",
+        session_id,
+        file_name,
+        len(extracted_text),
+    )
+    submit_fn(session_id, user_text, chat_id)
+
+
+def _is_oversized_document(size):
+    return (
+        isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > MAX_DOCUMENT_FILE_SIZE
+    )
+
+
+def _download_document(token, file_id, session=requests):
+    result = _telegram_request(
+        token,
+        "getFile",
+        session.get,
+        params={"file_id": file_id},
+        timeout=15,
+    )
+    file_path = result.get("file_path") if isinstance(result, dict) else None
+    if not isinstance(file_path, str) or not file_path:
+        raise TelegramError("Telegram returned an invalid file path.")
+
+    url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    try:
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        raise TelegramError("Telegram document download failed.") from error
+    return response.content
 
 
 def run_polling(token, update_handler, stop_event=None):
@@ -233,11 +388,7 @@ def build_telegram_channel(
             error,
         )
         try:
-            send_reply(
-                chat_id,
-                "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
-                "yenidən cəhd edin.",
-            )
+            send_reply(chat_id, DELIVERY_FAILURE_REPLY)
         except TelegramError as send_error:
             logger.error("❌ Could not send Telegram error message: %s", send_error)
 
@@ -273,6 +424,12 @@ def build_telegram_channel(
             lambda: reset_history(database_path, session_id),
         )
 
+    def download_document(file_id):
+        return _download_document(telegram_token, file_id)
+
+    def read_document(filename, data):
+        return extract_document_text(filename, data)
+
     def process_update(update):
         handle_update(
             update,
@@ -280,6 +437,8 @@ def build_telegram_channel(
             clear_history,
             send_reply,
             lambda session_id: is_message_allowed(database_path, session_id),
+            download_document_fn=download_document,
+            read_document_fn=read_document,
         )
 
     stop_event = threading.Event()

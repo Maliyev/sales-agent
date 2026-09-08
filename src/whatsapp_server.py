@@ -6,7 +6,7 @@ from whatsapp_webhook import (
     WhatsAppWebhookError,
     get_verification_challenge,
     is_valid_signature,
-    parse_text_messages,
+    parse_messages,
 )
 
 
@@ -48,12 +48,12 @@ def create_webhook_app(verify_token, app_secret, message_handler):
 
         payload = request.get_json(silent=True)
         try:
-            messages = parse_text_messages(payload)
+            messages = parse_messages(payload)
         except WhatsAppWebhookError:
             logger.warning("🚫 Webhook rejected: invalid payload")
             return Response("Invalid payload", status=400, mimetype="text/plain")
 
-        logger.info("✅ Webhook accepted | text_messages=%d", len(messages))
+        logger.info("✅ Webhook accepted | messages=%d", len(messages))
 
         for message in messages:
             message_handler(message)
