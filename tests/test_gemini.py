@@ -15,6 +15,8 @@ from gemini import (
     check_history_size,
     generate_content,
     get_function_call,
+    get_function_call_part,
+    get_function_calls,
     get_model_reply,
     get_text_response,
 )
@@ -44,6 +46,52 @@ class GeminiHistoryTests(unittest.TestCase):
         history = [{"role": "user", "parts": [{}]}]
 
         with self.assertRaisesRegex(RuntimeError, "invalid message format"):
+            check_history_size(history)
+
+    def test_allows_function_call_and_function_response_parts(self):
+        history = [
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {
+                            "name": "search_products",
+                            "args": {"query": "diode"},
+                        }
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "search_products",
+                            "response": {"results": []},
+                        }
+                    }
+                ],
+            },
+        ]
+
+        check_history_size(history)
+
+    def test_counts_function_parts_toward_the_history_limit(self):
+        history = [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "search_products",
+                            "response": {"results": "a" * MAX_HISTORY_CHARACTERS},
+                        }
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "250,000 tokens"):
             check_history_size(history)
 
     def test_sends_system_instruction_separately_from_history(self):
@@ -146,6 +194,39 @@ class GeminiHistoryTests(unittest.TestCase):
 
         self.assertEqual(get_text_response(data), "First second")
         self.assertEqual(get_function_call(data)["name"], "search_products")
+
+    def test_reads_all_function_calls_in_order(self):
+        data = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"functionCall": {"name": "search_products"}},
+                            {"text": "thinking"},
+                            {"functionCall": {"name": "request_operator"}},
+                        ]
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(
+            get_function_calls(data),
+            [{"name": "search_products"}, {"name": "request_operator"}],
+        )
+
+    def test_get_function_call_part_keeps_the_whole_part(self):
+        part = {
+            "functionCall": {
+                "name": "search_products",
+                "args": {"query": "diode"},
+            },
+            "thoughtSignature": "sig-abc",
+        }
+        data = {"candidates": [{"content": {"parts": [part]}}]}
+
+        self.assertEqual(get_function_call_part(data, "search_products"), part)
+        self.assertIsNone(get_function_call_part(data, "request_operator"))
 
 
 class GeminiRetryTests(unittest.TestCase):

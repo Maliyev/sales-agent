@@ -10,7 +10,16 @@ PROMPT_FILES = (
     "prompts/05_operator.md",
     "knowledge/store.md",
 )
+FINAL_PROMPT_FILES = tuple(
+    path for path in PROMPT_FILES if path != "prompts/04_product_tools.md"
+)
 COMPACTION_PROMPT_FILE = "prompts/06_compaction.md"
+LIST_ADDENDUM_FILES = {
+    "decision": "prompts/product_list_decision.md",
+    "selection": "prompts/product_list_selection.md",
+    "item_response": "prompts/product_list_item_response.md",
+    "report": "prompts/product_list_report.md",
+}
 
 
 def load_system_instruction(project_path=PROJECT_PATH):
@@ -20,8 +29,22 @@ def load_system_instruction(project_path=PROJECT_PATH):
     )
 
 
+def load_final_system_instruction(project_path=PROJECT_PATH):
+    return "\n\n".join(
+        load_prompt_file(relative_path, project_path)
+        for relative_path in FINAL_PROMPT_FILES
+    )
+
+
 def load_compaction_instruction(project_path=PROJECT_PATH):
     return load_prompt_file(COMPACTION_PROMPT_FILE, project_path)
+
+
+def load_list_mode_addenda(project_path=PROJECT_PATH):
+    return {
+        stage: load_prompt_file(relative_path, project_path)
+        for stage, relative_path in LIST_ADDENDUM_FILES.items()
+    }
 
 
 def load_prompt_file(relative_path, project_path=PROJECT_PATH):

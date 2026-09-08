@@ -15,6 +15,8 @@ from app_config import (
     get_context_token_limit,
     get_gemini_model,
     get_gemini_retry_settings,
+    get_max_api_calls_per_reply,
+    get_max_search_rounds,
     get_message_rate_limits,
     get_token_abuse_settings,
     get_tpm_limit,
@@ -40,6 +42,8 @@ class LoadConfigTests(unittest.TestCase):
 
         self.assertEqual(config["limits"]["message_rate"]["max_messages"], 15)
         self.assertEqual(config["limits"]["message_rate"]["window_seconds"], 60)
+        self.assertEqual(config["limits"]["max_search_rounds"], 3)
+        self.assertEqual(config["limits"]["max_api_calls_per_reply"], 70)
         self.assertEqual(config["gemini"]["tpm_limit"], 0)
         self.assertEqual(config["gemini"]["thinking_level"], "")
         self.assertIs(config["limits"]["context_overflow"]["auto_reset"], True)
@@ -126,6 +130,41 @@ class LoadConfigTests(unittest.TestCase):
 
         self.assertRaises(ConfigError, load_config, self.path)
 
+    def test_rejects_a_zero_max_search_rounds(self):
+        self.write_config({"limits": {"max_search_rounds": 0}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_negative_max_search_rounds(self):
+        self.write_config({"limits": {"max_search_rounds": -1}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_non_integer_max_search_rounds(self):
+        self.write_config({"limits": {"max_search_rounds": "three"}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_zero_max_api_calls_per_reply(self):
+        self.write_config({"limits": {"max_api_calls_per_reply": 0}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_negative_max_api_calls_per_reply(self):
+        self.write_config({"limits": {"max_api_calls_per_reply": -1}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_non_integer_max_api_calls_per_reply(self):
+        self.write_config({"limits": {"max_api_calls_per_reply": "many"}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_non_boolean_list_mode_enabled(self):
+        self.write_config({"limits": {"list_mode_enabled": "yes"}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
     def test_rejects_empty_retry_delays(self):
         self.write_config({"gemini": {"retry": {"delays": []}}})
 
@@ -161,6 +200,8 @@ class ConfigAccessorsTests(unittest.TestCase):
                     "retry": {"delays": [5, 10], "max_wait_seconds": 60},
                 },
                 "limits": {
+                    "max_search_rounds": 2,
+                    "max_api_calls_per_reply": 12,
                     "message_rate": {"max_messages": 7, "window_seconds": 30},
                     "token_abuse": {"limit": 900, "window_seconds": 45},
                     "context_overflow": {
@@ -183,6 +224,18 @@ class ConfigAccessorsTests(unittest.TestCase):
         self.assertIs(get_context_overflow_auto_compaction(), True)
         self.assertEqual(get_compaction_model(), "compactor-model")
         self.assertEqual(get_context_token_limit(), 150000)
+        self.assertEqual(get_max_search_rounds(), 2)
+        self.assertEqual(get_max_api_calls_per_reply(), 12)
+
+    def test_max_search_rounds_defaults_when_missing_from_active_config(self):
+        set_config({"limits": {}})
+
+        self.assertEqual(get_max_search_rounds(), 3)
+
+    def test_max_api_calls_per_reply_defaults_when_missing_from_active_config(self):
+        set_config({"limits": {}})
+
+        self.assertEqual(get_max_api_calls_per_reply(), 70)
 
     def test_the_compaction_model_falls_back_to_the_main_model(self):
         set_config(

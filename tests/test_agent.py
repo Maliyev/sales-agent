@@ -7,8 +7,14 @@ import unittest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent import AgentError, get_agent_reply
+from agent import (
+    DEFAULT_CLARIFYING_QUESTION,
+    AgentError,
+    _estimate_tokens,
+    get_agent_reply,
+)
 from agent_reply import AgentReply
+from app_config import set_config
 from database import initialize_database, insert_incoming_message
 
 
@@ -44,8 +50,23 @@ class FakeGemini:
         return self.responses.pop(0)
 
 
+class FlakyGemini(FakeGemini):
+    def __init__(self, responses, fail_index):
+        super().__init__(responses)
+        self.fail_index = fail_index
+        self.call_index = 0
+
+    def __call__(self, *args, **kwargs):
+        index = self.call_index
+        self.call_index += 1
+        if index == self.fail_index:
+            raise RuntimeError("Gemini returned an invalid response.")
+        return super().__call__(*args, **kwargs)
+
+
 class AgentTests(unittest.TestCase):
     def setUp(self):
+        set_config({"limits": {"max_search_rounds": 3}})
         self.history = [
             {"role": "user", "parts": [{"text": "I need an electronic part"}]},
             {"role": "model", "parts": [{"text": "What specifications?"}]},
@@ -77,7 +98,14 @@ class AgentTests(unittest.TestCase):
             },
         ]
 
-    def call_agent(self, gemini, search_fn=None, product_data_fn=None):
+    def call_agent(
+        self,
+        gemini,
+        search_fn=None,
+        product_data_fn=None,
+        final_system_instruction=None,
+        user_text="At least 200 volts",
+    ):
         if search_fn is None:
             search_fn = lambda query, max_results: self.results
         if product_data_fn is None:
@@ -85,16 +113,20 @@ class AgentTests(unittest.TestCase):
 
         return get_agent_reply(
             self.history,
-            "At least 200 volts",
+            user_text,
             "model",
             "key",
             "base prompt",
             "selection prompt",
             "response prompt",
+            final_system_instruction=final_system_instruction,
             search_fn=search_fn,
             product_data_fn=product_data_fn,
             generate_fn=gemini,
         )
+
+    def tearDown(self):
+        set_config(None)
 
     def test_returns_direct_answer_without_search(self):
         gemini = FakeGemini([text_response("Please specify the package.")])
@@ -269,6 +301,7 @@ class AgentTests(unittest.TestCase):
         gemini = FakeGemini(
             [
                 function_response("search_products", {"query": "diode 200V"}),
+                text_response("The search results look good."),
                 function_response(
                     "select_product_candidates",
                     {
@@ -296,12 +329,13 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(reply, AgentReply("Do you need one diode or a kit?"))
         self.assertEqual(search_calls, [("diode 200V", 30)])
+        self.assertEqual(len(gemini.calls), 4)
         self.assertEqual(
             detail_calls,
             [self.results[1]["url"], self.results[2]["url"]],
         )
-        selection_text = gemini.calls[1]["history"][-1]["parts"][0]["text"]
-        final_text = gemini.calls[2]["history"][-1]["parts"][0]["text"]
+        selection_text = gemini.calls[2]["history"][-1]["parts"][0]["text"]
+        final_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
         self.assertIn("Irrelevant motor", selection_text)
         self.assertNotIn("Irrelevant motor", final_text)
         self.assertNotIn("candidate_id", final_text)
@@ -311,14 +345,15 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("stock_quantity", selection_text)
         self.assertNotIn("availability", selection_text)
         self.assertEqual(self.history, original_history)
-        self.assertIn("selection prompt", gemini.calls[1]["system_instruction"])
-        self.assertNotIn("selection prompt", gemini.calls[2]["system_instruction"])
-        self.assertIn("response prompt", gemini.calls[2]["system_instruction"])
+        self.assertIn("selection prompt", gemini.calls[2]["system_instruction"])
+        self.assertNotIn("selection prompt", gemini.calls[3]["system_instruction"])
+        self.assertIn("response prompt", gemini.calls[3]["system_instruction"])
 
     def test_rejects_a_candidate_id_that_does_not_exist(self):
         gemini = FakeGemini(
             [
                 function_response("search_products", {"query": "diode"}),
+                text_response("The search results are ready."),
                 function_response(
                     "select_product_candidates",
                     {
@@ -344,6 +379,7 @@ class AgentTests(unittest.TestCase):
         gemini = FakeGemini(
             [
                 function_response("search_products", {"query": "diode"}),
+                text_response("The search results are ready."),
                 function_response(
                     "select_product_candidates",
                     {
@@ -367,10 +403,357 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(len(detail_calls), 10)
         self.assertNotIn(results[10]["url"], detail_calls)
 
-    def test_clarification_requires_a_question(self):
+    def test_runs_a_second_search_when_the_model_asks_again(self):
+        second_results = [
+            {
+                "title": "Diode 250V 1A",
+                "price": 0.2,
+                "currency": "AZN",
+                "availability": "in_stock",
+                "stock_quantity": 7,
+                "url": "https://www.elen.az/shop/9/desc/diode-250v",
+            },
+        ]
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode 200V"}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("The second search found good options."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [4],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here is a 250V diode."),
+            ]
+        )
+        detail_calls = []
+
+        def search_fn(query, max_results):
+            return second_results if query == "diode" else self.results
+
+        def product_data_fn(url):
+            detail_calls.append(url)
+            return {"title": "Verified diode", "url": url}
+
+        reply = self.call_agent(gemini, search_fn, product_data_fn)
+
+        self.assertEqual(reply, AgentReply("Here is a 250V diode."))
+        self.assertEqual(
+            detail_calls,
+            [second_results[0]["url"]],
+        )
+        description = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ][0]["description"]
+        self.assertIn("up to 3 times", description)
+        model_turn = gemini.calls[1]["history"][-2]
+        response_turn = gemini.calls[1]["history"][-1]
+        self.assertEqual(model_turn["role"], "model")
+        self.assertEqual(
+            model_turn["parts"][0]["functionCall"]["args"],
+            {"query": "diode 200V"},
+        )
+        self.assertEqual(response_turn["role"], "user")
+        round_results = response_turn["parts"][0]["functionResponse"][
+            "response"
+        ]["results"]
+        self.assertEqual(
+            [item["candidate_id"] for item in round_results],
+            [1, 2, 3],
+        )
+        selection_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertIn("Diode 250V 1A", selection_text)
+        self.assertIn("candidate_id\":4", selection_text)
+
+    def test_preserves_the_thought_signature_when_replaying_a_search(self):
+        gemini = FakeGemini(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "search_products",
+                                            "args": {"query": "diode"},
+                                        },
+                                        "thoughtSignature": "sig-abc",
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here is a diode."),
+            ]
+        )
+
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply("Here is a diode."))
+        model_turn = gemini.calls[1]["history"][-2]
+        self.assertEqual(
+            model_turn,
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {
+                            "name": "search_products",
+                            "args": {"query": "diode"},
+                        },
+                        "thoughtSignature": "sig-abc",
+                    }
+                ],
+            },
+        )
+
+    def test_stops_searching_after_the_configured_round_limit(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "one"}),
+                function_response("search_products", {"query": "two"}),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Found it."),
+            ]
+        )
+        search_queries = []
+
+        try:
+            set_config({"limits": {"max_search_rounds": 2}})
+            reply = self.call_agent(
+                gemini,
+                search_fn=lambda query, max_results: (
+                    search_queries.append(query) or self.results
+                ),
+            )
+        finally:
+            set_config(None)
+
+        self.assertEqual(reply, AgentReply("Found it."))
+        self.assertEqual(search_queries, ["one", "two"])
+        self.assertEqual(len(gemini.calls), 4)
+
+    def test_searches_again_after_an_empty_first_round(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode 10V 1A"}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("Stopping after the second search."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here is a diode."),
+            ]
+        )
+
+        def search_fn(query, max_results):
+            return [] if query == "diode 10V 1A" else self.results
+
+        reply = self.call_agent(gemini, search_fn=search_fn)
+
+        self.assertEqual(reply, AgentReply("Here is a diode."))
+        selection_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertIn("Diode 1N4007 1000V", selection_text)
+
+    def test_all_empty_searches_end_with_a_clarification_request(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "one"}),
+                function_response("search_products", {"query": "two"}),
+                function_response("search_products", {"query": "three"}),
+                text_response("Please tell me more about what you need."),
+            ]
+        )
+        search_queries = []
+
+        reply = self.call_agent(
+            gemini,
+            search_fn=lambda query, max_results: (
+                search_queries.append(query) or []
+            ),
+        )
+
+        self.assertEqual(
+            reply,
+            AgentReply("Please tell me more about what you need."),
+        )
+        self.assertEqual(len(search_queries), 3)
+        self.assertEqual(len(gemini.calls), 4)
+        final_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertIn("No matching products", final_text)
+        self.assertIn("response prompt", gemini.calls[3]["system_instruction"])
+
+    def test_does_not_duplicate_products_found_in_multiple_rounds(self):
+        duplicate = dict(self.results[1])
+        second_results = [duplicate, self.results[2]]
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "one"}),
+                function_response("search_products", {"query": "two"}),
+                text_response("Stopping after the second search."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [2, 3],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here are the diodes."),
+            ]
+        )
+        detail_calls = []
+
+        def search_fn(query, max_results):
+            return second_results if query == "two" else self.results[:2]
+
+        def product_data_fn(url):
+            detail_calls.append(url)
+            return {"title": "Verified diode", "url": url}
+
+        reply = self.call_agent(gemini, search_fn, product_data_fn)
+
+        self.assertEqual(reply, AgentReply("Here are the diodes."))
+        model_turn = gemini.calls[2]["history"][-2]
+        response_turn = gemini.calls[2]["history"][-1]
+        self.assertEqual(
+            model_turn["parts"][0]["functionCall"]["args"],
+            {"query": "two"},
+        )
+        round_results = response_turn["parts"][0]["functionResponse"][
+            "response"
+        ]["results"]
+        self.assertEqual(
+            [item["candidate_id"] for item in round_results],
+            [3],
+        )
+        selection_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertEqual(selection_text.count("Diode 1N4007 1000V"), 1)
+        self.assertEqual(detail_calls, [self.results[1]["url"], self.results[2]["url"]])
+
+    def test_refers_to_the_operator_after_failed_searches(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "one"}),
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "Our operator will help you find it.",
+                        "operator_message": "Nothing found after a search.",
+                    },
+                ),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            search_fn=lambda query, max_results: [],
+        )
+
+        self.assertEqual(
+            reply,
+            AgentReply(
+                "Our operator will help you find it.",
+                "Nothing found after a search.",
+            ),
+        )
+        self.assertEqual(len(gemini.calls), 2)
+
+    def test_final_unexpected_tool_call_falls_back_to_the_clarifying_question(self):
         gemini = FakeGemini(
             [
                 function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [],
+                        "needs_clarification": True,
+                        "clarifying_question": "Which voltage do you need?",
+                    },
+                ),
+                function_response("search_products", {"query": "diode"}),
+            ]
+        )
+
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply("Which voltage do you need?"))
+
+    def test_empty_selection_with_the_wrong_flag_becomes_a_clarifying_question(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [],
+                        "needs_clarification": False,
+                        "clarifying_question": "Which voltage do you need?",
+                    },
+                ),
+                function_response("search_products", {"query": "diode"}),
+            ]
+        )
+
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply("Which voltage do you need?"))
+
+    def test_empty_selection_without_a_question_gets_the_default_question(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                function_response("search_products", {"query": "diode"}),
+            ]
+        )
+
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply(DEFAULT_CLARIFYING_QUESTION))
+
+    def test_clarification_with_an_empty_question_gets_the_default_question(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
                 function_response(
                     "select_product_candidates",
                     {
@@ -379,11 +762,484 @@ class AgentTests(unittest.TestCase):
                         "clarifying_question": "",
                     },
                 ),
+                function_response("search_products", {"query": "diode"}),
             ]
         )
 
-        with self.assertRaisesRegex(AgentError, "without a question"):
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply(DEFAULT_CLARIFYING_QUESTION))
+
+    def test_final_unexpected_tool_call_with_text_returns_the_text(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"text": "Here is a diode."},
+                                    {
+                                        "functionCall": {
+                                            "name": "search_products",
+                                            "args": {"query": "diode"},
+                                        }
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+
+        reply = self.call_agent(gemini)
+
+        self.assertEqual(reply, AgentReply("Here is a diode."))
+
+    def test_final_unknown_tool_without_fallback_still_fails(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                function_response("search_products", {"query": "diode"}),
+            ]
+        )
+
+        with self.assertRaisesRegex(AgentError, "unknown tool"):
             self.call_agent(gemini)
+
+    def test_final_call_uses_a_dedicated_system_instruction(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "diode"}),
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [2],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here is a diode."),
+            ]
+        )
+
+        reply = self.call_agent(gemini, final_system_instruction="final prompt")
+
+        self.assertEqual(reply, AgentReply("Here is a diode."))
+        self.assertIn("base prompt", gemini.calls[0]["system_instruction"])
+        self.assertEqual(
+            gemini.calls[3]["system_instruction"],
+            "final prompt\n\nresponse prompt",
+        )
+
+    def test_operator_call_wins_over_parallel_search_calls(self):
+        gemini = FakeGemini(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "search_products",
+                                            "args": {"query": "diode"},
+                                        }
+                                    },
+                                    {
+                                        "functionCall": {
+                                            "name": "request_operator",
+                                            "args": {
+                                                "customer_reply": "a",
+                                                "operator_message": "b",
+                                            },
+                                        },
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            search_fn=lambda query, max_results: self.fail(
+                "Product search should not run when an operator is requested."
+            ),
+        )
+
+        self.assertEqual(reply, AgentReply("a", "b"))
+
+    def test_parallel_search_calls_are_executed_in_one_turn(self):
+        queries = []
+
+        def search_fn(query, max_results):
+            queries.append(query)
+            return [
+                {
+                    "title": f"Item for {query}",
+                    "url": f"https://www.elen.az/shop/9/desc/{query}",
+                }
+            ]
+
+        gemini = FakeGemini(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "search_products",
+                                            "args": {"query": "diode"},
+                                        },
+                                        "thoughtSignature": "sig-a",
+                                    },
+                                    {
+                                        "functionCall": {
+                                            "name": "search_products",
+                                            "args": {"query": "resistor"},
+                                        },
+                                        "thoughtSignature": "sig-b",
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                },
+                text_response("The search results look good."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [2],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Here are the results."),
+            ]
+        )
+
+        reply = self.call_agent(gemini, search_fn=search_fn)
+
+        self.assertEqual(reply, AgentReply("Here are the results."))
+        self.assertEqual(queries, ["diode", "resistor"])
+        second_decision_history = gemini.calls[1]["history"]
+        search_turn = [
+            message
+            for message in second_decision_history
+            if message["role"] == "model"
+            and any("functionCall" in part for part in message["parts"])
+        ][-1]
+        self.assertEqual(len(search_turn["parts"]), 2)
+        self.assertEqual(search_turn["parts"][0]["thoughtSignature"], "sig-a")
+        self.assertEqual(search_turn["parts"][1]["thoughtSignature"], "sig-b")
+        response_index = second_decision_history.index(search_turn) + 1
+        response_turn = second_decision_history[response_index]
+        self.assertEqual(response_turn["role"], "user")
+        self.assertEqual(len(response_turn["parts"]), 2)
+        first_results = response_turn["parts"][0]["functionResponse"]["response"][
+            "results"
+        ]
+        second_results = response_turn["parts"][1]["functionResponse"]["response"][
+            "results"
+        ]
+        self.assertEqual(first_results[0]["candidate_id"], 1)
+        self.assertEqual(second_results[0]["candidate_id"], 2)
+
+    def test_rejects_an_unknown_tool_after_a_search_round(self):
+        gemini = FakeGemini(
+            [
+                function_response("search_products", {"query": "one"}),
+                function_response("some_other_tool", {}),
+            ]
+        )
+
+        with self.assertRaisesRegex(AgentError, "unknown tool"):
+            self.call_agent(
+                gemini,
+                search_fn=lambda query, max_results: self.results,
+            )
+
+    def test_disabled_list_mode_hides_the_start_tool(self):
+        set_config(
+            {
+                "limits": {
+                    "max_search_rounds": 3,
+                    "list_mode_enabled": False,
+                }
+            }
+        )
+        gemini = FakeGemini(
+            [function_response("start_product_list", {"count": 2})]
+        )
+
+        with self.assertRaisesRegex(AgentError, "unknown tool"):
+            self.call_agent(
+                gemini,
+                user_text="Please check: 1) diode 2) relay",
+            )
+        declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in declarations],
+            ["search_products", "request_operator"],
+        )
+
+    def test_product_list_runs_a_full_pipeline_per_item(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("The first search found the diode."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Found diode 1N4007 for 0.1 AZN."),
+                text_response("No relay matches in the catalog."),
+                text_response("Full report below."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Full report below."))
+        self.assertEqual(len(gemini.calls), 7)
+        start_declarations = gemini.calls[0]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in start_declarations],
+            ["search_products", "request_operator", "start_product_list"],
+        )
+        item1_system = gemini.calls[1]["system_instruction"]
+        self.assertIn("`2` items in total", item1_system)
+        self.assertIn("working on item `1`", item1_system)
+        item1_declarations = gemini.calls[1]["kwargs"]["tools"][0][
+            "functionDeclarations"
+        ]
+        self.assertEqual(
+            [declaration["name"] for declaration in item1_declarations],
+            ["search_products", "request_operator"],
+        )
+        item1_selection_system = gemini.calls[3]["system_instruction"]
+        self.assertIn("base prompt", item1_selection_system)
+        self.assertIn("selection prompt", item1_selection_system)
+        self.assertIn(
+            "covers ONLY the current item",
+            item1_selection_system,
+        )
+        item1_final_system = gemini.calls[4]["system_instruction"]
+        self.assertIn("final system prompt", item1_final_system)
+        self.assertIn("will NOT be seen by the customer", item1_final_system)
+        self.assertIn("`1` of `2`", item1_final_system)
+        self.assertNotIn("response prompt", item1_final_system)
+        item2_system = gemini.calls[5]["system_instruction"]
+        self.assertIn("working on item `2`", item2_system)
+        report_call = gemini.calls[6]
+        self.assertIn("response prompt", report_call["system_instruction"])
+        self.assertIn(
+            "combined reply for the customer",
+            report_call["system_instruction"],
+        )
+        report_text = report_call["history"][-1]["parts"][0]["text"]
+        self.assertIn("List processing results", report_text)
+        self.assertIn('"processed":2', report_text)
+        self.assertIn('"total":2', report_text)
+        self.assertIn(
+            '"item":1,"result":"Found diode 1N4007 for 0.1 AZN."',
+            report_text,
+        )
+        self.assertIn(
+            '"item":2,"result":"No relay matches in the catalog."',
+            report_text,
+        )
+
+    def test_product_list_rejects_an_invalid_count(self):
+        invalid_counts = [0, -3, "2", 1.5, None, True]
+        for count in invalid_counts:
+            with self.subTest(count=count):
+                gemini = FakeGemini(
+                    [function_response("start_product_list", {"count": count})]
+                )
+
+                with self.assertRaises(AgentError):
+                    self.call_agent(
+                        gemini,
+                        user_text="Please check: 1) diode 2) relay",
+                    )
+
+    def test_product_list_stops_on_budget_and_reports_processed_items(self):
+        set_config(
+            {
+                "limits": {
+                    "max_search_rounds": 1,
+                    "max_api_calls_per_reply": 6,
+                }
+            }
+        )
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 3}),
+                function_response("search_products", {"query": "item one"}),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("One: found."),
+                function_response("search_products", {"query": "item two"}),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Partial report."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) 2) 3)",
+        )
+
+        self.assertEqual(reply, AgentReply("Partial report."))
+        self.assertEqual(len(gemini.calls), 7)
+        report_text = gemini.calls[6]["history"][-1]["parts"][0]["text"]
+        self.assertIn('"processed":1', report_text)
+        self.assertIn('"total":3', report_text)
+        self.assertIn('"item":1,"result":"One: found."', report_text)
+        self.assertNotIn('"item":2', report_text)
+
+    def test_product_list_notes_an_operator_item_and_continues(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response(
+                    "request_operator",
+                    {
+                        "customer_reply": "I will check with the operator.",
+                        "operator_message": "Item 1 needs a human.",
+                    },
+                ),
+                text_response("Second item found."),
+                text_response("Report with operator note."),
+            ]
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) custom cable 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Report with operator note."))
+        self.assertEqual(len(gemini.calls), 4)
+        report_text = gemini.calls[3]["history"][-1]["parts"][0]["text"]
+        self.assertIn(
+            '"item":1,"result":"Passed to a human operator."', report_text
+        )
+        self.assertIn(
+            '"item":2,"result":"Second item found."', report_text
+        )
+
+    def test_product_list_keeps_going_after_a_broken_api_response(self):
+        gemini = FlakyGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                text_response("Second item found."),
+                text_response("Report despite the failure."),
+            ],
+            fail_index=1,
+        )
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+        )
+
+        self.assertEqual(reply, AgentReply("Report despite the failure."))
+        self.assertEqual(len(gemini.calls), 3)
+        report_text = gemini.calls[2]["history"][-1]["parts"][0]["text"]
+        self.assertIn(
+            '"item":1,"result":"This item could not be verified."',
+            report_text,
+        )
+        self.assertIn(
+            '"item":2,"result":"Second item found."', report_text
+        )
+
+
+class EstimateTokensTests(unittest.TestCase):
+    def test_counts_function_call_and_response_parts(self):
+        history = [
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {
+                            "name": "search_products",
+                            "args": {"query": "a" * 300},
+                        }
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "search_products",
+                            "response": {"results": "b" * 300},
+                        }
+                    }
+                ],
+            },
+        ]
+
+        self.assertGreater(_estimate_tokens(history, ""), 0)
 
 
 class ApiCallRecordingTests(unittest.TestCase):

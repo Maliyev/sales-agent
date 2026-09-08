@@ -1,3 +1,4 @@
+import json
 import time
 
 import requests
@@ -169,27 +170,64 @@ def get_text_response(data):
     return "".join(text_parts)
 
 
-def get_function_call(data, expected_name=None):
+def get_function_calls(data):
+    function_calls = []
     for part in _get_response_parts(data):
         function_call = part.get("functionCall")
-        if not isinstance(function_call, dict):
-            continue
+        if isinstance(function_call, dict):
+            function_calls.append(function_call)
+    return function_calls
+
+
+def get_function_call(data, expected_name=None):
+    for function_call in get_function_calls(data):
         if expected_name is None or function_call.get("name") == expected_name:
             return function_call
     return None
+
+
+def get_function_call_part(data, expected_name=None):
+    parts = get_function_call_parts(data, expected_name)
+    return parts[0] if parts else None
+
+
+def get_function_call_parts(data, expected_name=None):
+    function_call_parts = []
+    for part in _get_response_parts(data):
+        function_call = part.get("functionCall")
+        if isinstance(function_call, dict):
+            if expected_name is None or function_call.get("name") == expected_name:
+                function_call_parts.append(part)
+    return function_call_parts
 
 
 def _get_response_parts(data):
     try:
         parts = data["candidates"][0]["content"]["parts"]
     except (IndexError, KeyError, TypeError) as error:
-        raise RuntimeError("Gemini returned an invalid response.") from error
+        raise RuntimeError(
+            f"Gemini returned an invalid response. {_describe_response_state(data)}"
+        ) from error
 
     if not isinstance(parts, list):
         raise RuntimeError("Gemini returned an invalid response.")
     if any(not isinstance(part, dict) for part in parts):
         raise RuntimeError("Gemini returned an invalid response.")
     return parts
+
+
+def _describe_response_state(data):
+    if not isinstance(data, dict):
+        return "The response is not a JSON object."
+    candidates = data.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        candidate = candidates[0]
+        if isinstance(candidate, dict) and candidate.get("finishReason"):
+            return f"finishReason={candidate['finishReason']}."
+    feedback = data.get("promptFeedback")
+    if isinstance(feedback, dict) and feedback.get("blockReason"):
+        return f"blockReason={feedback['blockReason']}."
+    return "No candidate content was returned."
 
 
 def check_history_size(history):
@@ -205,15 +243,16 @@ def check_history_size(history):
             raise RuntimeError("Conversation history has an invalid message format.")
 
         for part in parts:
-            try:
-                text = part["text"]
-            except (KeyError, TypeError) as error:
-                raise RuntimeError("Conversation history has an invalid message format.") from error
-
-            if not isinstance(text, str):
+            if not isinstance(part, dict):
                 raise RuntimeError("Conversation history has an invalid message format.")
 
-            total_characters += len(text)
+            text = part.get("text")
+            if isinstance(text, str):
+                total_characters += len(text)
+            elif "functionCall" in part or "functionResponse" in part:
+                total_characters += len(json.dumps(part, ensure_ascii=False))
+            else:
+                raise RuntimeError("Conversation history has an invalid message format.")
 
     if total_characters > MAX_HISTORY_CHARACTERS:
         estimated_tokens = total_characters // CHARACTERS_PER_TOKEN
