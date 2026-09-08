@@ -63,14 +63,14 @@ PRODUCT_LIST_START_DECLARATION = {
     "description": (
         "Start processing a customer's product list. Call it immediately, "
         "before any searches, when the customer message lists several "
-        "products to check (at most 10 items per reply)."
+        "products to check (at most 10 items per reply (IMPORTANT!))."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "count": {
                 "type": "INTEGER",
-                "description": "How many products the customer's list contains.",
+                "description": "How many products the customer's list contains. count <= 10",
             }
         },
         "required": ["count"],

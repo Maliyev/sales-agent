@@ -16,19 +16,29 @@ from database import (
     save_model_message,
     update_messages_status,
 )
+from document_reader import (
+    MAX_DOCUMENT_FILE_SIZE,
+    DocumentReadError,
+    build_document_user_text,
+    extract_document_text,
+    is_supported_document,
+)
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
 from prompts import load_prompt_file, load_system_instruction
 from reply_delivery import ReplyDeliveryError, deliver_agent_reply
 from session_coordinator import SessionCoordinator
-from whatsapp_client import WhatsAppError, send_text_message
+from whatsapp_client import WhatsAppError, download_media, send_text_message
 from whatsapp_server import WEBHOOK_PATH, create_webhook_app
 from whatsapp_store import (
     claim_incoming_message,
     release_incoming_message,
 )
-from whatsapp_webhook import WhatsAppTextMessage
+from whatsapp_webhook import (
+    WhatsAppDocumentMessage,
+    WhatsAppTextMessage,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +48,20 @@ CONVERSATION_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "conversations.log"
 PRIVATE_ENV_PATH = PROJECT_ROOT / ".private" / "meta-whatsapp" / "credentials.env"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+UNSUPPORTED_DOCUMENT_REPLY = (
+    "Bu fayl formatını oxuya bilmirəm. Zəhmət olmasa .xlsx və ya "
+    ".docx formatında göndərin."
+)
+UNREADABLE_DOCUMENT_REPLY = (
+    "Sənədi oxuya bilmirəm. Zəhmət olmasa faylı yenidən göndərin."
+)
+OVERSIZED_DOCUMENT_REPLY = (
+    "Fayl çox böyükdür. Zəhmət olmasa 5 MB-dan kiçik fayl göndərin."
+)
+DELIVERY_FAILURE_REPLY = (
+    "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
+    "yenidən cəhd edin."
+)
 logger = get_logger("whatsapp")
 
 
@@ -48,8 +72,11 @@ def handle_incoming_message(
     release_fn,
     allow_fn,
     submit_fn,
+    read_document_fn=None,
+    download_media_fn=None,
+    send_fn=None,
 ):
-    if not isinstance(message, WhatsAppTextMessage):
+    if not isinstance(message, (WhatsAppTextMessage, WhatsAppDocumentMessage)):
         raise WhatsAppError("WhatsApp returned an invalid incoming message.")
     if message.phone_number_id != expected_phone_number_id:
         logger.info("➖ Ignored event for another WhatsApp phone number")
@@ -66,17 +93,75 @@ def handle_incoming_message(
                 session_id,
             )
             return False
-        logger.info(
-            "WhatsApp message accepted | session=%s chars=%d",
-            session_id,
-            len(message.text),
-        )
-        submit_fn(session_id, message.text, message.sender_id)
+        if isinstance(message, WhatsAppDocumentMessage):
+            user_text = _prepare_document_text(
+                message,
+                read_document_fn,
+                download_media_fn,
+                send_fn,
+            )
+            if user_text is None:
+                return True
+            logger.info(
+                "📄 WhatsApp document accepted | session=%s filename=%s chars=%d",
+                session_id,
+                message.filename,
+                len(user_text),
+            )
+        else:
+            user_text = message.text
+            logger.info(
+                "WhatsApp message accepted | session=%s chars=%d",
+                session_id,
+                len(user_text),
+            )
+        submit_fn(session_id, user_text, message.sender_id)
     except Exception:
         release_fn(message.message_id)
         raise
 
     return True
+
+
+def _prepare_document_text(message, read_document_fn, download_media_fn, send_fn):
+    if read_document_fn is None or download_media_fn is None or send_fn is None:
+        raise WhatsAppError("WhatsApp document handlers are not configured.")
+
+    if not is_supported_document(message.filename):
+        logger.info(
+            "➖ Ignored unsupported WhatsApp document | filename=%s",
+            message.filename,
+        )
+        send_fn(message.sender_id, UNSUPPORTED_DOCUMENT_REPLY)
+        return None
+
+    try:
+        data = download_media_fn(message.media_id)
+    except (WhatsAppError, requests.RequestException) as error:
+        logger.error(
+            "❌ Could not download WhatsApp document | filename=%s error=%s",
+            message.filename,
+            error,
+        )
+        send_fn(message.sender_id, DELIVERY_FAILURE_REPLY)
+        return None
+
+    if not isinstance(data, (bytes, bytearray)) or len(data) > MAX_DOCUMENT_FILE_SIZE:
+        send_fn(message.sender_id, OVERSIZED_DOCUMENT_REPLY)
+        return None
+
+    try:
+        extracted_text = read_document_fn(message.filename, data)
+    except DocumentReadError as error:
+        logger.warning(
+            "📄 Could not read WhatsApp document | filename=%s error=%s",
+            message.filename,
+            error,
+        )
+        send_fn(message.sender_id, UNREADABLE_DOCUMENT_REPLY)
+        return None
+
+    return build_document_user_text(message.filename, extracted_text, message.caption)
 
 
 def get_settings():
@@ -172,11 +257,7 @@ def build_whatsapp_channel(
             error,
         )
         try:
-            send_reply(
-                recipient,
-                "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
-                "yenidən cəhd edin.",
-            )
+            send_reply(recipient, DELIVERY_FAILURE_REPLY)
         except WhatsAppError as send_error:
             logger.error("❌ Could not send WhatsApp error message: %s", send_error)
 
@@ -206,6 +287,17 @@ def build_whatsapp_channel(
             lambda error: report_error(recipient, error),
         )
 
+    def download_document_media(media_id):
+        return download_media(
+            access_token,
+            phone_number_id,
+            media_id,
+            graph_api_version,
+        )
+
+    def read_document(filename, data):
+        return extract_document_text(filename, data)
+
     def process_message(message):
         handle_incoming_message(
             message,
@@ -218,6 +310,9 @@ def build_whatsapp_channel(
             lambda message_id: release_incoming_message(database_path, message_id),
             lambda session_id: is_message_allowed(database_path, session_id),
             submit_message,
+            read_document_fn=read_document,
+            download_media_fn=download_document_media,
+            send_fn=send_reply,
         )
 
     app = create_webhook_app(verify_token, app_secret, process_message)

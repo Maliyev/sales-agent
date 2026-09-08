@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 from telegram_bot import (
     MAX_MESSAGE_LENGTH,
     TelegramError,
+    _download_document,
     deliver_agent_reply,
     get_updates,
     handle_update,
@@ -17,6 +18,7 @@ from telegram_bot import (
     split_message,
 )
 from agent_reply import AgentReply
+from document_reader import DocumentReadError, build_document_user_text
 
 
 class TelegramBotTests(unittest.TestCase):
@@ -95,6 +97,194 @@ class TelegramBotTests(unittest.TestCase):
         )
 
         self.assertEqual(sent[0][0], 7)
+
+    def test_document_message_submits_the_converted_text(self):
+        submissions = []
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "document": {
+                        "file_id": "file-1",
+                        "file_name": "bom.xlsx",
+                        "file_size": 1024,
+                    },
+                    "caption": "Check these please",
+                }
+            },
+            lambda session_id, text, chat_id: submissions.append(
+                (session_id, text, chat_id)
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: b"data",
+            read_document_fn=lambda filename, data: "Component\tQty",
+        )
+
+        expected = build_document_user_text(
+            "bom.xlsx",
+            "Component\tQty",
+            caption="Check these please",
+        )
+        self.assertEqual(
+            submissions,
+            [("telegram:123", expected, 123)],
+        )
+        self.assertEqual(sent, [])
+
+    def test_unsupported_document_gets_a_reply_without_a_download(self):
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "document": {"file_id": "file-1", "file_name": "scan.pdf"},
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: self.fail(
+                "Download should not be called"
+            ),
+            read_document_fn=lambda filename, data: "text",
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn(".xlsx", sent[0][1])
+
+    def test_oversized_document_is_rejected_before_the_download(self):
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "document": {
+                        "file_id": "file-1",
+                        "file_name": "bom.xlsx",
+                        "file_size": 6 * 1024 * 1024,
+                    },
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: self.fail(
+                "Download should not be called"
+            ),
+            read_document_fn=lambda filename, data: "text",
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("5 MB", sent[0][1])
+
+    def test_unreadable_document_gets_a_friendly_reply(self):
+        sent = []
+
+        def broken_reader(filename, data):
+            raise DocumentReadError("The Excel file could not be parsed.")
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "document": {"file_id": "file-1", "file_name": "bom.xlsx"},
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: b"data",
+            read_document_fn=broken_reader,
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("oxuya bilmirəm", sent[0][1])
+
+    def test_failed_document_download_gets_the_generic_error_reply(self):
+        sent = []
+
+        def broken_downloader(file_id):
+            raise TelegramError("Telegram document download failed.")
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "document": {"file_id": "file-1", "file_name": "bom.xlsx"},
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=broken_downloader,
+            read_document_fn=lambda filename, data: "text",
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("cavab verə bilmirəm", sent[0][1])
+
+    def test_blocked_session_documents_are_ignored(self):
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "document": {"file_id": "file-1", "file_name": "bom.xlsx"},
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: self.fail("A blocked session should get no reply"),
+            lambda session_id: False,
+            download_document_fn=lambda file_id: self.fail(
+                "Download should not be called"
+            ),
+            read_document_fn=lambda filename, data: "text",
+        )
+
+    def test_download_document_uses_the_file_api(self):
+        file_info = Mock()
+        file_info.json.return_value = {
+            "ok": True,
+            "result": {"file_path": "documents/file_1.xlsx"},
+        }
+        file_response = Mock()
+        file_response.content = b"DATA"
+        session = Mock()
+        session.get.side_effect = [file_info, file_response]
+
+        data = _download_document("secret-token", "file-1", session=session)
+
+        self.assertEqual(data, b"DATA")
+        first_url = session.get.call_args_list[0].args[0]
+        second_url = session.get.call_args_list[1].args[0]
+        self.assertEqual(
+            first_url,
+            "https://api.telegram.org/botsecret-token/getFile",
+        )
+        self.assertEqual(
+            second_url,
+            "https://api.telegram.org/file/botsecret-token/documents/file_1.xlsx",
+        )
 
     def test_splits_long_replies_before_sending(self):
         text = "a" * (MAX_MESSAGE_LENGTH * 2 + 1)

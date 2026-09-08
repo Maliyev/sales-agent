@@ -10,11 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from whatsapp_server import create_webhook_app
 from whatsapp_webhook import (
+    WhatsAppDocumentMessage,
     WhatsAppTextMessage,
     WhatsAppWebhookError,
     get_verification_challenge,
     is_valid_signature,
-    parse_text_messages,
+    parse_messages,
 )
 
 
@@ -83,7 +84,7 @@ class WhatsAppWebhookTests(unittest.TestCase):
 
     def test_parses_text_messages(self):
         self.assertEqual(
-            parse_text_messages(create_payload()),
+            parse_messages(create_payload()),
             [
                 WhatsAppTextMessage(
                     message_id="wamid.123",
@@ -107,7 +108,97 @@ class WhatsAppWebhookTests(unittest.TestCase):
         ]
         value["statuses"] = [{"id": "wamid.sent", "status": "sent"}]
 
-        self.assertEqual(parse_text_messages(payload), [])
+        self.assertEqual(parse_messages(payload), [])
+
+    def test_parses_a_document_message(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.doc",
+                "type": "document",
+                "document": {
+                    "id": "media-9",
+                    "filename": " bom.xlsx ",
+                    "caption": " Check these ",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                },
+            }
+        ]
+
+        self.assertEqual(
+            parse_messages(payload),
+            [
+                WhatsAppDocumentMessage(
+                    message_id="wamid.doc",
+                    sender_id="994501234567",
+                    media_id="media-9",
+                    filename="bom.xlsx",
+                    caption="Check these",
+                    phone_number_id="1242528055613330",
+                )
+            ],
+        )
+
+    def test_parses_a_document_message_without_a_caption(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.doc",
+                "type": "document",
+                "document": {"id": "media-9", "filename": "bom.xlsx"},
+            }
+        ]
+
+        parsed = parse_messages(payload)
+
+        self.assertIsNone(parsed[0].caption)
+
+    def test_ignores_an_invalid_document_message(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.doc1",
+                "type": "document",
+                "document": {"filename": "bom.xlsx"},
+            },
+            {
+                "from": "994501234567",
+                "id": "wamid.doc2",
+                "type": "document",
+                "document": {"id": "media-9"},
+            },
+        ]
+
+        self.assertEqual(parse_messages(payload), [])
+
+    def test_parses_text_and_document_messages_together(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.123",
+                "type": "text",
+                "text": {"body": "Salam"},
+            },
+            {
+                "from": "994501234567",
+                "id": "wamid.doc",
+                "type": "document",
+                "document": {"id": "media-9", "filename": "bom.xlsx"},
+            },
+        ]
+
+        parsed = parse_messages(payload)
+
+        self.assertEqual([type(message) for message in parsed],
+                         [WhatsAppTextMessage, WhatsAppDocumentMessage])
 
     def test_webhook_app_verifies_and_receives_signed_payloads(self):
         received = []
@@ -139,7 +230,7 @@ class WhatsAppWebhookTests(unittest.TestCase):
         )
 
         self.assertEqual(delivery.status_code, 200)
-        self.assertEqual(received, parse_text_messages(create_payload()))
+        self.assertEqual(received, parse_messages(create_payload()))
 
     def test_webhook_app_rejects_an_invalid_signature(self):
         app = create_webhook_app("verify-me", "app-secret", lambda message: None)

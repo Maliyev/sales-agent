@@ -6,8 +6,10 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from document_reader import DocumentReadError, build_document_user_text
 from whatsapp_bot import handle_incoming_message
-from whatsapp_webhook import WhatsAppTextMessage
+from whatsapp_client import WhatsAppError
+from whatsapp_webhook import WhatsAppDocumentMessage, WhatsAppTextMessage
 
 
 class WhatsAppBotTests(unittest.TestCase):
@@ -103,6 +105,167 @@ class WhatsAppBotTests(unittest.TestCase):
             )
 
         release.assert_called_once_with("wamid.123")
+
+    def test_rejects_an_invalid_incoming_message(self):
+        with self.assertRaisesRegex(WhatsAppError, "invalid incoming message"):
+            handle_incoming_message(
+                object(),
+                "1242528055613330",
+                Mock(),
+                Mock(),
+                Mock(),
+                Mock(),
+            )
+
+    def test_submits_a_document_as_the_converted_text(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="bom.xlsx",
+            caption="Check these",
+            phone_number_id="1242528055613330",
+        )
+        claim = Mock(return_value=True)
+        release = Mock()
+        allow = Mock(return_value=True)
+        submit = Mock()
+        send = Mock()
+        downloads = Mock(return_value=b"data")
+        readers = Mock(return_value="Component\tQty")
+
+        handled = handle_incoming_message(
+            document,
+            "1242528055613330",
+            claim,
+            release,
+            allow,
+            submit,
+            read_document_fn=readers,
+            download_media_fn=downloads,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        downloads.assert_called_once_with("media-9")
+        readers.assert_called_once_with("bom.xlsx", b"data")
+        submit.assert_called_once_with(
+            "whatsapp:994501234567",
+            build_document_user_text("bom.xlsx", "Component\tQty", "Check these"),
+            "994501234567",
+        )
+        send.assert_not_called()
+        release.assert_not_called()
+
+    def test_replies_to_an_unsupported_document_without_a_download(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="scan.pdf",
+            phone_number_id="1242528055613330",
+        )
+        submit = Mock()
+        send = Mock()
+        downloads = lambda media_id: self.fail("Download should not be called")
+
+        handled = handle_incoming_message(
+            document,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            submit,
+            read_document_fn=lambda filename, data: "text",
+            download_media_fn=downloads,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn(".xlsx", send.call_args.args[1])
+        submit.assert_not_called()
+
+    def test_replies_to_an_unreadable_document(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="bom.xlsx",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        def broken_reader(filename, data):
+            raise DocumentReadError("The Excel file could not be parsed.")
+
+        handle_incoming_message(
+            document,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            read_document_fn=broken_reader,
+            download_media_fn=lambda media_id: b"data",
+            send_fn=send,
+        )
+
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("oxuya bilmirəm", send.call_args.args[1])
+
+    def test_replies_to_an_oversized_document(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="bom.xlsx",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        handle_incoming_message(
+            document,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            read_document_fn=lambda filename, data: "text",
+            download_media_fn=lambda media_id: b"x" * (6 * 1024 * 1024),
+            send_fn=send,
+        )
+
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("5 MB", send.call_args.args[1])
+
+    def test_replies_to_a_failed_document_download(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="bom.xlsx",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        def broken_downloader(media_id):
+            raise WhatsAppError("WhatsApp media download failed.")
+
+        handle_incoming_message(
+            document,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            read_document_fn=lambda filename, data: "text",
+            download_media_fn=broken_downloader,
+            send_fn=send,
+        )
+
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("cavab verə bilmirəm", send.call_args.args[1])
 
 
 if __name__ == "__main__":

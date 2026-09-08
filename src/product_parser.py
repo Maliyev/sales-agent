@@ -39,12 +39,22 @@ class ProductPageParser(HTMLParser):
 
         if tag == "h1" and self.title is None:
             self.current_field = "title"
-        elif tag == "span" and "val" in classes and "stock" in classes:
+        elif (
+            tag == "span"
+            and self.stock_text is None
+            and "val" in classes
+            and "stock" in classes
+        ):
             self.current_field = "stock"
-        elif tag == "span" and any(
-            class_name.endswith("-price") for class_name in classes
+        elif (
+            tag == "span"
+            and self.price_text is None
+            and any(class_name.endswith("-price") for class_name in classes)
         ):
             self.current_field = "price"
+
+
+
 
     def handle_endtag(self, tag):
         if tag in {"script", "style"} and self.ignored_depth:
