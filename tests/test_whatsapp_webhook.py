@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from whatsapp_server import create_webhook_app
 from whatsapp_webhook import (
     WhatsAppDocumentMessage,
+    WhatsAppImageMessage,
     WhatsAppTextMessage,
     WhatsAppWebhookError,
     get_verification_challenge,
@@ -137,6 +138,7 @@ class WhatsAppWebhookTests(unittest.TestCase):
                     filename="bom.xlsx",
                     caption="Check these",
                     phone_number_id="1242528055613330",
+                    mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             ],
         )
@@ -199,6 +201,103 @@ class WhatsAppWebhookTests(unittest.TestCase):
 
         self.assertEqual([type(message) for message in parsed],
                          [WhatsAppTextMessage, WhatsAppDocumentMessage])
+
+    def test_parses_an_image_message(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.img",
+                "type": "image",
+                "image": {
+                    "id": " media-5 ",
+                    "mime_type": " image/jpeg ",
+                    "caption": " What is this? ",
+                },
+            }
+        ]
+
+        self.assertEqual(
+            parse_messages(payload),
+            [
+                WhatsAppImageMessage(
+                    message_id="wamid.img",
+                    sender_id="994501234567",
+                    media_id="media-5",
+                    mime_type="image/jpeg",
+                    caption="What is this?",
+                    phone_number_id="1242528055613330",
+                )
+            ],
+        )
+
+    def test_parses_an_image_message_without_a_caption(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.img",
+                "type": "image",
+                "image": {"id": "media-5", "mime_type": "image/png"},
+            }
+        ]
+
+        parsed = parse_messages(payload)
+
+        self.assertIsNone(parsed[0].caption)
+
+    def test_ignores_an_invalid_image_message(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.img1",
+                "type": "image",
+                "image": {"mime_type": "image/jpeg"},
+            },
+            {
+                "from": "994501234567",
+                "id": "wamid.img2",
+                "type": "image",
+                "image": {"id": "media-5"},
+            },
+        ]
+
+        self.assertEqual(parse_messages(payload), [])
+
+    def test_parses_text_image_and_document_messages_together(self):
+        payload = create_payload()
+        value = payload["entry"][0]["changes"][0]["value"]
+        value["messages"] = [
+            {
+                "from": "994501234567",
+                "id": "wamid.123",
+                "type": "text",
+                "text": {"body": "Salam"},
+            },
+            {
+                "from": "994501234567",
+                "id": "wamid.img",
+                "type": "image",
+                "image": {"id": "media-5", "mime_type": "image/jpeg"},
+            },
+            {
+                "from": "994501234567",
+                "id": "wamid.doc",
+                "type": "document",
+                "document": {"id": "media-9", "filename": "bom.xlsx"},
+            },
+        ]
+
+        parsed = parse_messages(payload)
+
+        self.assertEqual(
+            [type(message) for message in parsed],
+            [WhatsAppTextMessage, WhatsAppImageMessage, WhatsAppDocumentMessage],
+        )
 
     def test_webhook_app_verifies_and_receives_signed_payloads(self):
         received = []

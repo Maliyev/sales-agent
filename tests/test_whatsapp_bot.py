@@ -7,9 +7,14 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from document_reader import DocumentReadError, build_document_user_text
+from image_reader import ImageReadError, build_image_user_text
 from whatsapp_bot import handle_incoming_message
 from whatsapp_client import WhatsAppError
-from whatsapp_webhook import WhatsAppDocumentMessage, WhatsAppTextMessage
+from whatsapp_webhook import (
+    WhatsAppDocumentMessage,
+    WhatsAppImageMessage,
+    WhatsAppTextMessage,
+)
 
 
 class WhatsAppBotTests(unittest.TestCase):
@@ -266,6 +271,192 @@ class WhatsAppBotTests(unittest.TestCase):
 
         self.assertEqual(len(send.call_args_list), 1)
         self.assertIn("cavab verə bilmirəm", send.call_args.args[1])
+
+    def test_submits_an_image_as_the_vision_description(self):
+        image = WhatsAppImageMessage(
+            message_id="wamid.img",
+            sender_id="994501234567",
+            media_id="media-5",
+            mime_type="image/jpeg",
+            caption="What is this?",
+            phone_number_id="1242528055613330",
+        )
+        claim = Mock(return_value=True)
+        release = Mock()
+        submit = Mock()
+        send = Mock()
+        downloads = Mock(return_value=b"IMG")
+        described = Mock(return_value="A red LED.")
+
+        handled = handle_incoming_message(
+            image,
+            "1242528055613330",
+            claim,
+            release,
+            Mock(return_value=True),
+            submit,
+            download_media_fn=downloads,
+            describe_image_fn=described,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        downloads.assert_called_once_with("media-5")
+        described.assert_called_once_with(
+            b"IMG",
+            "image/jpeg",
+            "whatsapp:994501234567",
+        )
+        submit.assert_called_once_with(
+            "whatsapp:994501234567",
+            build_image_user_text("A red LED.", "What is this?"),
+            "994501234567",
+        )
+        send.assert_not_called()
+        release.assert_not_called()
+
+    def test_an_image_document_is_routed_to_the_vision_path(self):
+        document = WhatsAppDocumentMessage(
+            message_id="wamid.doc",
+            sender_id="994501234567",
+            media_id="media-9",
+            filename="photo.png",
+            mime_type="image/png",
+            phone_number_id="1242528055613330",
+        )
+        submit = Mock()
+        described = Mock(return_value="A resistor")
+
+        def broken_reader(filename, data):
+            self.fail("Document reader should not be called for images")
+
+        handle_incoming_message(
+            document,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            submit,
+            read_document_fn=broken_reader,
+            download_media_fn=lambda media_id: b"IMG",
+            describe_image_fn=described,
+            send_fn=Mock(),
+        )
+
+        described.assert_called_once_with(
+            b"IMG",
+            "image/png",
+            "whatsapp:994501234567",
+        )
+        submit.assert_called_once_with(
+            "whatsapp:994501234567",
+            build_image_user_text("A resistor"),
+            "994501234567",
+        )
+
+    def test_replies_when_the_image_cannot_be_described(self):
+        image = WhatsAppImageMessage(
+            message_id="wamid.img",
+            sender_id="994501234567",
+            media_id="media-5",
+            mime_type="image/jpeg",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        def broken_describer(data, mime, session_id):
+            raise ImageReadError("Image description failed.")
+
+        handled = handle_incoming_message(
+            image,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            download_media_fn=lambda media_id: b"IMG",
+            describe_image_fn=broken_describer,
+            send_fn=send,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("emal edə bilmirəm", send.call_args.args[1])
+
+    def test_replies_to_an_oversized_image(self):
+        image = WhatsAppImageMessage(
+            message_id="wamid.img",
+            sender_id="994501234567",
+            media_id="media-5",
+            mime_type="image/jpeg",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        handle_incoming_message(
+            image,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            download_media_fn=lambda media_id: b"x" * (6 * 1024 * 1024),
+            describe_image_fn=Mock(),
+            send_fn=send,
+        )
+
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("5 MB", send.call_args.args[1])
+
+    def test_replies_to_a_failed_image_download(self):
+        image = WhatsAppImageMessage(
+            message_id="wamid.img",
+            sender_id="994501234567",
+            media_id="media-5",
+            mime_type="image/jpeg",
+            phone_number_id="1242528055613330",
+        )
+        send = Mock()
+
+        def broken_downloader(media_id):
+            raise WhatsAppError("WhatsApp media download failed.")
+
+        handle_incoming_message(
+            image,
+            "1242528055613330",
+            Mock(return_value=True),
+            Mock(),
+            Mock(return_value=True),
+            Mock(),
+            download_media_fn=broken_downloader,
+            describe_image_fn=Mock(),
+            send_fn=send,
+        )
+
+        self.assertEqual(len(send.call_args_list), 1)
+        self.assertIn("cavab verə bilmirəm", send.call_args.args[1])
+
+    def test_raises_when_image_handlers_are_not_configured(self):
+        image = WhatsAppImageMessage(
+            message_id="wamid.img",
+            sender_id="994501234567",
+            media_id="media-5",
+            mime_type="image/jpeg",
+            phone_number_id="1242528055613330",
+        )
+        release = Mock()
+
+        with self.assertRaisesRegex(WhatsAppError, "not configured"):
+            handle_incoming_message(
+                image,
+                "1242528055613330",
+                Mock(return_value=True),
+                release,
+                Mock(return_value=True),
+                Mock(),
+            )
+
+        release.assert_called_once_with("wamid.img")
 
 
 if __name__ == "__main__":

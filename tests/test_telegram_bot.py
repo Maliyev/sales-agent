@@ -19,6 +19,7 @@ from telegram_bot import (
 )
 from agent_reply import AgentReply
 from document_reader import DocumentReadError, build_document_user_text
+from image_reader import ImageReadError, build_image_user_text
 
 
 class TelegramBotTests(unittest.TestCase):
@@ -260,6 +261,240 @@ class TelegramBotTests(unittest.TestCase):
             ),
             read_document_fn=lambda filename, data: "text",
         )
+
+    def test_photo_message_submits_the_vision_description(self):
+        submissions = []
+        sent = []
+        downloads = []
+        described = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "photo": [
+                        {"file_id": "small", "width": 90, "height": 90},
+                        {"file_id": "big", "width": 1280, "height": 720},
+                    ],
+                    "caption": "What is this?",
+                }
+            },
+            lambda session_id, text, chat_id: submissions.append(
+                (session_id, text, chat_id)
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: downloads.append(file_id) or b"IMG",
+            describe_image_fn=lambda data, mime, session_id: described.append(
+                (data, mime, session_id)
+            )
+            or "A red LED.",
+        )
+
+        self.assertEqual(downloads, ["big"])
+        self.assertEqual(
+            described,
+            [(b"IMG", "image/jpeg", "telegram:123")],
+        )
+        self.assertEqual(
+            submissions,
+            [
+                (
+                    "telegram:123",
+                    build_image_user_text("A red LED.", "What is this?"),
+                    123,
+                )
+            ],
+        )
+        self.assertEqual(sent, [])
+
+    def test_photo_without_readable_sizes_falls_back_to_the_text_reply(self):
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [{"width": 90, "height": 90}],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+        )
+
+        self.assertEqual(len(sent), 1)
+
+    def test_oversized_photo_is_rejected_before_the_download(self):
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [
+                        {
+                            "file_id": "big",
+                            "width": 4000,
+                            "height": 3000,
+                            "file_size": 6 * 1024 * 1024,
+                        }
+                    ],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: self.fail(
+                "Download should not be called"
+            ),
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("5 MB", sent[0][1])
+
+    def test_oversized_photo_data_is_rejected_after_the_download(self):
+        sent = []
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [{"file_id": "big", "width": 4000, "height": 3000}],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: b"x" * (6 * 1024 * 1024),
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("5 MB", sent[0][1])
+
+    def test_failed_photo_download_gets_the_generic_error_reply(self):
+        sent = []
+
+        def broken_downloader(file_id):
+            raise TelegramError("Telegram document download failed.")
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [{"file_id": "file-1", "width": 90, "height": 90}],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=broken_downloader,
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("cavab verə bilmirəm", sent[0][1])
+
+    def test_failed_image_description_gets_a_text_hint(self):
+        sent = []
+
+        def broken_describer(data, mime, session_id):
+            raise ImageReadError("Image description failed.")
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [{"file_id": "file-1", "width": 90, "height": 90}],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: b"IMG",
+            describe_image_fn=broken_describer,
+        )
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("emal edə bilmirəm", sent[0][1])
+
+    def test_blocked_session_photos_are_ignored(self):
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 7},
+                    "photo": [{"file_id": "file-1", "width": 90, "height": 90}],
+                }
+            },
+            lambda session_id, text, chat_id: self.fail(
+                "Agent should not be called"
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: self.fail("A blocked session should get no reply"),
+            lambda session_id: False,
+            download_document_fn=lambda file_id: self.fail(
+                "Download should not be called"
+            ),
+        )
+
+    def test_an_image_sent_as_a_document_is_routed_to_the_vision_path(self):
+        submissions = []
+        sent = []
+
+        def broken_reader(filename, data):
+            self.fail("Document reader should not be called for images")
+
+        handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "document": {
+                        "file_id": "file-1",
+                        "file_name": "photo.png",
+                        "mime_type": "image/png",
+                        "file_size": 1024,
+                    },
+                    "caption": "Check this part",
+                }
+            },
+            lambda session_id, text, chat_id: submissions.append(
+                (session_id, text, chat_id)
+            ),
+            lambda session_id: self.fail("Reset should not be called"),
+            lambda chat_id, text: sent.append((chat_id, text)),
+            lambda session_id: True,
+            download_document_fn=lambda file_id: b"IMG",
+            read_document_fn=broken_reader,
+            describe_image_fn=lambda data, mime, session_id: (
+                self.assertEqual((data, mime), (b"IMG", "image/png")) or "A resistor"
+            ),
+        )
+
+        self.assertEqual(
+            submissions,
+            [
+                (
+                    "telegram:123",
+                    build_image_user_text("A resistor", "Check this part"),
+                    123,
+                )
+            ],
+        )
+        self.assertEqual(sent, [])
 
     def test_download_document_uses_the_file_api(self):
         file_info = Mock()

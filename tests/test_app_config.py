@@ -21,6 +21,7 @@ from app_config import (
     get_token_abuse_settings,
     get_tpm_limit,
     get_thinking_level,
+    get_vision_model,
     load_config,
     set_config,
 )
@@ -46,6 +47,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config["limits"]["max_api_calls_per_reply"], 70)
         self.assertEqual(config["gemini"]["tpm_limit"], 0)
         self.assertEqual(config["gemini"]["thinking_level"], "")
+        self.assertEqual(config["gemini"]["vision_model"], "")
         self.assertIs(config["limits"]["context_overflow"]["auto_reset"], True)
         self.assertIs(
             config["limits"]["context_overflow"]["auto_compaction"],
@@ -96,6 +98,11 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_rejects_a_non_string_thinking_level(self):
         self.write_config({"gemini": {"thinking_level": 3}})
+
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_a_non_string_vision_model(self):
+        self.write_config({"gemini": {"vision_model": 3}})
 
         self.assertRaises(ConfigError, load_config, self.path)
 
@@ -236,6 +243,33 @@ class ConfigAccessorsTests(unittest.TestCase):
         set_config({"limits": {}})
 
         self.assertEqual(get_max_api_calls_per_reply(), 70)
+
+    def test_the_vision_model_is_read_when_configured(self):
+        set_config(
+            {
+                "gemini": {
+                    "model": "main-model",
+                    "vision_model": "vision-model",
+                    "tpm_limit": 1,
+                },
+            }
+        )
+
+        self.assertEqual(get_vision_model(), "vision-model")
+
+    def test_the_vision_model_falls_back_to_the_main_model(self):
+        set_config(
+            {
+                "gemini": {"model": "main-model", "vision_model": "  ", "tpm_limit": 1},
+            }
+        )
+
+        self.assertEqual(get_vision_model(), "main-model")
+
+    def test_the_vision_model_falls_back_when_missing_from_active_config(self):
+        set_config({"gemini": {"model": "main-model", "tpm_limit": 1}})
+
+        self.assertEqual(get_vision_model(), "main-model")
 
     def test_the_compaction_model_falls_back_to_the_main_model(self):
         set_config(

@@ -194,10 +194,63 @@ def migration_003_compaction_api_calls(connection):
     )
 
 
+def migration_004_vision_api_calls(connection):
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_calls'"
+    ).fetchone()
+    if row is not None and "vision" in (row["sql"] or ""):
+        return
+
+    connection.execute(
+        """
+        CREATE TABLE api_calls_new (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            in_reply_to_message_id INTEGER REFERENCES messages(id),
+            purpose TEXT NOT NULL CHECK(purpose IN ('decision', 'selection', 'final', 'compaction', 'vision')),
+            model TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('ok', 'failed')),
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO api_calls_new (
+            id, session_id, in_reply_to_message_id, purpose, model,
+            prompt_tokens, completion_tokens, duration_ms, status, error, created_at
+        )
+        SELECT
+            id, session_id, in_reply_to_message_id, purpose, model,
+            prompt_tokens, completion_tokens, duration_ms, status, error, created_at
+        FROM api_calls
+        """
+    )
+    connection.execute("DROP TABLE api_calls")
+    connection.execute("ALTER TABLE api_calls_new RENAME TO api_calls")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_session_time
+        ON api_calls(session_id, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS api_calls_by_time
+        ON api_calls(created_at)
+        """
+    )
+
+
 MIGRATIONS = (
     migration_001_initial_schema,
     migration_002_api_calls,
     migration_003_compaction_api_calls,
+    migration_004_vision_api_calls,
 )
 
 

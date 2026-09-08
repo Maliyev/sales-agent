@@ -20,6 +20,7 @@ from database import (
     load_session_messages,
     migration_001_initial_schema,
     migration_002_api_calls,
+    migration_003_compaction_api_calls,
     record_api_call,
     reset_history,
     run_database_operation,
@@ -77,7 +78,7 @@ class DatabaseSchemaTests(unittest.TestCase):
             }
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertIn("api_calls", names)
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
 
     def test_reinitializing_an_up_to_date_database_changes_nothing(self):
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -91,8 +92,8 @@ class DatabaseSchemaTests(unittest.TestCase):
             version_after = connection.execute(
                 "PRAGMA user_version"
             ).fetchone()[0]
-        self.assertEqual(version_before, 3)
-        self.assertEqual(version_after, 3)
+        self.assertEqual(version_before, 4)
+        self.assertEqual(version_after, 4)
 
     def test_saved_exchanges_get_delivered_status_and_visible_by_default(self):
         save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
@@ -396,8 +397,38 @@ class CompactionStorageTests(unittest.TestCase):
             rows = connection.execute(
                 "SELECT purpose FROM api_calls"
             ).fetchall()
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
         self.assertEqual(rows, [("compaction",)])
+
+    def test_migration_adds_vision_purpose_to_a_version_3_database(self):
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            migration_001_initial_schema(connection)
+            migration_002_api_calls(connection)
+            migration_003_compaction_api_calls(connection)
+            connection.execute("PRAGMA user_version = 3")
+            connection.commit()
+
+        initialize_database(self.database_path)
+
+        create_session(self.database_path, "telegram:1")
+        record_api_call(
+            self.database_path,
+            "telegram:1",
+            None,
+            "vision",
+            "gemini-model",
+            prompt_tokens=90,
+            completion_tokens=30,
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            rows = connection.execute(
+                "SELECT purpose, prompt_tokens, completion_tokens FROM api_calls"
+            ).fetchall()
+        self.assertEqual(version, 4)
+        self.assertEqual(rows, [("vision", 90, 30)])
 
     def test_add_history_summary_archives_messages_and_inserts_a_tool_row(self):
         save_exchange(self.database_path, "telegram:1", "Hello", "Hi")

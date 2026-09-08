@@ -13,6 +13,7 @@ THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
 DEFAULT_CONFIG = {
     "gemini": {
         "model": "gemini-2.5-flash-lite",
+        "vision_model": "",
         "tpm_limit": 0,
         "thinking_level": "",
         "retry": {
@@ -86,6 +87,13 @@ def set_config(config):
 
 def get_gemini_model():
     return get_config()["gemini"]["model"]
+
+
+def get_vision_model():
+    vision_model = get_config()["gemini"].get("vision_model", "")
+    if isinstance(vision_model, str) and vision_model.strip():
+        return vision_model.strip()
+    return get_gemini_model()
 
 
 def get_tpm_limit():
@@ -166,6 +174,8 @@ def _validate_config(config):
     model = config["gemini"].get("model")
     if not isinstance(model, str) or not model.strip():
         raise ConfigError("gemini.model must be a non-empty string.")
+    if not isinstance(config["gemini"].get("vision_model"), str):
+        raise ConfigError("gemini.vision_model must be a string.")
     _validate_non_negative_int(
         config["gemini"].get("tpm_limit"),
         "gemini.tpm_limit",

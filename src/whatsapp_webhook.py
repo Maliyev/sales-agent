@@ -23,6 +23,17 @@ class WhatsAppDocumentMessage:
     filename: str
     caption: str | None = None
     phone_number_id: str | None = None
+    mime_type: str | None = None
+
+
+@dataclass(frozen=True)
+class WhatsAppImageMessage:
+    message_id: str
+    sender_id: str
+    media_id: str
+    mime_type: str
+    caption: str | None = None
+    phone_number_id: str | None = None
 
 
 def get_verification_challenge(query, expected_token):
@@ -97,6 +108,8 @@ def _parse_message(message, phone_number_id):
         return _parse_text_message(message, phone_number_id)
     if message.get("type") == "document":
         return _parse_document_message(message, phone_number_id)
+    if message.get("type") == "image":
+        return _parse_image_message(message, phone_number_id)
     return None
 
 
@@ -111,6 +124,7 @@ def _parse_document_message(message, phone_number_id):
     media_id = document_data.get("id")
     filename = document_data.get("filename")
     caption = document_data.get("caption")
+    mime_type = document_data.get("mime_type")
 
     if not isinstance(message_id, str) or not message_id:
         return None
@@ -126,6 +140,46 @@ def _parse_document_message(message, phone_number_id):
         sender_id=sender_id,
         media_id=media_id.strip(),
         filename=filename.strip(),
+        caption=(
+            caption.strip()
+            if isinstance(caption, str) and caption.strip()
+            else None
+        ),
+        phone_number_id=phone_number_id,
+        mime_type=(
+            mime_type.strip()
+            if isinstance(mime_type, str) and mime_type.strip()
+            else None
+        ),
+    )
+
+
+def _parse_image_message(message, phone_number_id):
+    if message.get("type") != "image":
+        return None
+
+    message_id = message.get("id")
+    sender_id = message.get("from")
+    image = message.get("image")
+    image_data = image if isinstance(image, dict) else {}
+    media_id = image_data.get("id")
+    mime_type = image_data.get("mime_type")
+    caption = image_data.get("caption")
+
+    if not isinstance(message_id, str) or not message_id:
+        return None
+    if not isinstance(sender_id, str) or not sender_id:
+        return None
+    if not isinstance(media_id, str) or not media_id.strip():
+        return None
+    if not isinstance(mime_type, str) or not mime_type.strip():
+        return None
+
+    return WhatsAppImageMessage(
+        message_id=message_id,
+        sender_id=sender_id,
+        media_id=media_id.strip(),
+        mime_type=mime_type.strip(),
         caption=(
             caption.strip()
             if isinstance(caption, str) and caption.strip()

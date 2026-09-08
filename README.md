@@ -104,14 +104,26 @@ at 40 000 characters with a truncation notice. The converted text is wrapped
 in a system note ("The customer sent a document ..., the system converted it
 to plain text below"), stored as the incoming message, and processed like a
 regular customer text — so a product table inside an attachment automatically
-triggers list mode. Unsupported formats (`.pdf`, legacy `.doc`/`.xls`, images)
-get a friendly reply asking for `.xlsx`/`.docx`.
+triggers list mode. Unsupported formats (`.pdf`, legacy `.doc`/`.xls`) get a
+friendly reply asking for `.xlsx`/`.docx`.
+
+**Photo attachments.** Compressed photos (`message.photo`, `type: "image"`)
+and images sent as document files (`.jpg`/`.jpeg`/`.png`/`.webp` or an
+`image/*` MIME type) are downloaded by the channel adapter (max 5 MB) and sent
+to a vision model with a dedicated prompt (`prompts/07_image_describer.md`):
+it identifies the component or transcribes a product list from the photo. The
+returned description is wrapped in a system note ("... may contain
+inaccuracies") together with the customer caption and processed like regular
+text. The vision call is recorded in `api_calls` with purpose `vision` and
+uses `gemini.vision_model` (falls back to the main model when empty). The
+agent is instructed to warn the customer that image recognition is
+experimental and to ask for text input.
 
 **Every Gemini call** goes through a token estimate, a per-minute TPM limiter
 (over-budget requests wait for the next minute window instead of failing), the
 API call itself (usage recorded in the `api_calls` table per purpose:
-decision / selection / final / compaction), and a per-session consumption
-guard that blocks sessions burning too many tokens too fast.
+decision / selection / final / compaction / vision), and a per-session
+consumption guard that blocks sessions burning too many tokens too fast.
 
 **Reply path.** The final text (and, when the agent escalated to a human, an
 operator note) is saved with status `RESPONSE_READY`, delivered through the
@@ -321,6 +333,7 @@ root (secrets stay in `.env`). Complete reference:
 {
   "gemini": {
     "model": "gemini-2.5-flash-lite",
+    "vision_model": "",
     "tpm_limit": 0,
     "thinking_level": "",
     "retry": {
@@ -349,6 +362,9 @@ root (secrets stay in `.env`). Complete reference:
 ```
 
 - `gemini.model` — the Gemini model name (moved out of `.env`).
+- `gemini.vision_model` — the model used to describe customer photos; an
+  empty string falls back to `gemini.model`. The description call is recorded
+  in `api_calls` with the `vision` purpose.
 - `gemini.tpm_limit` — an estimated tokens-per-minute budget across all
   sessions. `0` disables it. When a request would exceed the budget, the
   worker waits and retries every few seconds until the current minute window
