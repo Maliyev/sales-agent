@@ -69,6 +69,7 @@ def generate_customer_reply(
     selection_instruction,
     response_instruction,
     in_reply_to_message_id=None,
+    list_start_notify_fn=None,
 ):
     history = load_history(database_path, session_id)
     log_conversation(session_id, "USER", flatten_text(user_text))
@@ -85,6 +86,7 @@ def generate_customer_reply(
             session_id=session_id,
             database_path=database_path,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=list_start_notify_fn,
         )
 
     try:

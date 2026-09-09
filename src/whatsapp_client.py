@@ -26,15 +26,14 @@ def download_media(
     api_version = _validate_api_version(api_version)
 
     headers = {"Authorization": f"Bearer {access_token}"}
-    url = (
-        f"https://graph.facebook.com/{api_version}/"
-        f"{phone_number_id}/media/{media_id}"
-    )
+    url = f"https://graph.facebook.com/{api_version}/{media_id}"
+    params = {"phone_number_id": phone_number_id}
 
     try:
         response = session.get(
             url,
             headers=headers,
+            params=params,
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()

@@ -76,6 +76,38 @@ class GeminiHistoryTests(unittest.TestCase):
 
         check_history_size(history)
 
+    def test_allows_inline_data_parts(self):
+        history = [
+            {
+                "role": "user",
+                "parts": [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": "abcd"}},
+                    {"inlineData": {"mime_type": "image/jpeg", "data": "abcd"}},
+                    {"text": "Describe the attached image."},
+                ],
+            }
+        ]
+
+        check_history_size(history)
+
+    def test_counts_inline_data_toward_the_history_limit(self):
+        history = [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": "a" * MAX_HISTORY_CHARACTERS,
+                        }
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "250,000 tokens"):
+            check_history_size(history)
+
     def test_counts_function_parts_toward_the_history_limit(self):
         history = [
             {

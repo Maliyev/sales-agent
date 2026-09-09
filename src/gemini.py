@@ -249,7 +249,12 @@ def check_history_size(history):
             text = part.get("text")
             if isinstance(text, str):
                 total_characters += len(text)
-            elif "functionCall" in part or "functionResponse" in part:
+            elif (
+                "functionCall" in part
+                or "functionResponse" in part
+                or "inline_data" in part
+                or "inlineData" in part
+            ):
                 total_characters += len(json.dumps(part, ensure_ascii=False))
             else:
                 raise RuntimeError("Conversation history has an invalid message format.")

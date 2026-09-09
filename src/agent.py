@@ -177,6 +177,7 @@ def get_agent_reply(
     session_id=None,
     database_path=None,
     in_reply_to_message_id=None,
+    list_start_notify_fn=None,
 ):
     if final_system_instruction is None:
         final_system_instruction = load_final_system_instruction()
@@ -256,6 +257,7 @@ def get_agent_reply(
 
     total = reply.count
     _log_step(session_id, "LIST_START", f"total={total}")
+    _notify_list_start(list_start_notify_fn)
     item_notes = []
     for item in range(1, total + 1):
         if budget["used"] >= budget["limit"] - 1:
@@ -798,6 +800,18 @@ def _read_list_start(function_call):
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise AgentError("Gemini declared an invalid product list.")
     return StartListRequest(count)
+
+
+def _notify_list_start(notify_fn):
+    if not callable(notify_fn):
+        return
+    try:
+        notify_fn()
+    except Exception as error:
+        logger.warning(
+            "⚠️ Could not send the list processing notice | error=%s",
+            error,
+        )
 
 
 def _spend_budget(budget, list_ctx=None):

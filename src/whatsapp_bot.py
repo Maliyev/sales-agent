@@ -6,13 +6,14 @@ from types import SimpleNamespace
 import requests
 
 from agent import AgentError
-from app_config import get_gemini_model
+from app_config import get_gemini_model, get_vision_model
 from app_logging import configure_logging, get_logger
 from config import load_env_file
 from database import (
     DatabaseError,
     initialize_database,
     insert_incoming_message,
+    reset_history,
     save_model_message,
     update_messages_status,
 )
@@ -23,6 +24,14 @@ from document_reader import (
     extract_document_text,
     is_supported_document,
 )
+from image_reader import (
+    MAX_IMAGE_FILE_SIZE,
+    ImageReadError,
+    build_image_user_text,
+    is_image,
+    resolve_mime_type,
+)
+from image_reader import describe_image as describe_image_bytes
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
@@ -37,6 +46,7 @@ from whatsapp_store import (
 )
 from whatsapp_webhook import (
     WhatsAppDocumentMessage,
+    WhatsAppImageMessage,
     WhatsAppTextMessage,
 )
 
@@ -55,12 +65,25 @@ UNSUPPORTED_DOCUMENT_REPLY = (
 UNREADABLE_DOCUMENT_REPLY = (
     "Sənədi oxuya bilmirəm. Zəhmət olmasa faylı yenidən göndərin."
 )
+UNREADABLE_IMAGE_REPLY = (
+    "Şəkli emal edə bilmirəm. Zəhmət olmasa sorğunuzu mətn şəklində yazın."
+)
 OVERSIZED_DOCUMENT_REPLY = (
     "Fayl çox böyükdür. Zəhmət olmasa 5 MB-dan kiçik fayl göndərin."
 )
 DELIVERY_FAILURE_REPLY = (
     "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
     "yenidən cəhd edin."
+)
+GREETING_REPLY = (
+    "Salam! Mən elen.az köməkçisiyəm. Məhsullar haqqında sual verə "
+    "bilərsiniz. Söhbəti silmək üçün /reset yazın."
+)
+SESSION_RESET_REPLY = "Söhbət tarixçəsi silindi."
+UNKNOWN_COMMAND_REPLY = "Naməlum əmr. Mövcud əmr: /reset"
+LIST_PROCESSING_NOTICE = (
+    "Sorğunuz emal olunur, bu bir neçə dəqiqə çəkə bilər.\n"
+    "Ваш запрос обрабатывается, это может занять несколько минут."
 )
 logger = get_logger("whatsapp")
 
@@ -72,11 +95,16 @@ def handle_incoming_message(
     release_fn,
     allow_fn,
     submit_fn,
+    reset_fn=None,
     read_document_fn=None,
     download_media_fn=None,
+    describe_image_fn=None,
     send_fn=None,
 ):
-    if not isinstance(message, (WhatsAppTextMessage, WhatsAppDocumentMessage)):
+    if not isinstance(
+        message,
+        (WhatsAppTextMessage, WhatsAppDocumentMessage, WhatsAppImageMessage),
+    ):
         raise WhatsAppError("WhatsApp returned an invalid incoming message.")
     if message.phone_number_id != expected_phone_number_id:
         logger.info("➖ Ignored event for another WhatsApp phone number")
@@ -93,11 +121,27 @@ def handle_incoming_message(
                 session_id,
             )
             return False
-        if isinstance(message, WhatsAppDocumentMessage):
+        if isinstance(message, WhatsAppImageMessage):
+            user_text = _prepare_image_text(
+                message,
+                resolve_mime_type(None, message.mime_type),
+                describe_image_fn,
+                download_media_fn,
+                send_fn,
+            )
+            if user_text is None:
+                return True
+            logger.info(
+                "🖼 WhatsApp image accepted | session=%s desc_chars=%d",
+                session_id,
+                len(user_text),
+            )
+        elif isinstance(message, WhatsAppDocumentMessage):
             user_text = _prepare_document_text(
                 message,
                 read_document_fn,
                 download_media_fn,
+                describe_image_fn,
                 send_fn,
             )
             if user_text is None:
@@ -109,6 +153,15 @@ def handle_incoming_message(
                 len(user_text),
             )
         else:
+            command_handled = _handle_text_command(
+                message.text,
+                session_id,
+                message.sender_id,
+                reset_fn,
+                send_fn,
+            )
+            if command_handled:
+                return True
             user_text = message.text
             logger.info(
                 "WhatsApp message accepted | session=%s chars=%d",
@@ -123,9 +176,45 @@ def handle_incoming_message(
     return True
 
 
-def _prepare_document_text(message, read_document_fn, download_media_fn, send_fn):
+def _handle_text_command(text, session_id, recipient, reset_fn, send_fn):
+    command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
+    if not command.startswith("/"):
+        return False
+    if send_fn is None:
+        raise WhatsAppError("WhatsApp command handlers are not configured.")
+    if command == "/start":
+        send_fn(recipient, GREETING_REPLY)
+        return True
+    if command == "/reset":
+        if reset_fn is None:
+            raise WhatsAppError("WhatsApp reset handler is not configured.")
+        reset_fn(session_id)
+        logger.info("🧹 WhatsApp session reset | session=%s", session_id)
+        send_fn(recipient, SESSION_RESET_REPLY)
+        return True
+    send_fn(recipient, UNKNOWN_COMMAND_REPLY)
+    return True
+
+
+def _prepare_document_text(
+    message,
+    read_document_fn,
+    download_media_fn,
+    describe_image_fn,
+    send_fn,
+):
     if read_document_fn is None or download_media_fn is None or send_fn is None:
         raise WhatsAppError("WhatsApp document handlers are not configured.")
+
+    mime_type = resolve_mime_type(message.filename, message.mime_type)
+    if is_image(mime_type, message.filename):
+        return _prepare_image_text(
+            message,
+            mime_type,
+            describe_image_fn,
+            download_media_fn,
+            send_fn,
+        )
 
     if not is_supported_document(message.filename):
         logger.info(
@@ -162,6 +251,46 @@ def _prepare_document_text(message, read_document_fn, download_media_fn, send_fn
         return None
 
     return build_document_user_text(message.filename, extracted_text, message.caption)
+
+
+def _prepare_image_text(
+    message,
+    mime_type,
+    describe_image_fn,
+    download_media_fn,
+    send_fn,
+):
+    if describe_image_fn is None or download_media_fn is None or send_fn is None:
+        raise WhatsAppError("WhatsApp image handlers are not configured.")
+
+    try:
+        data = download_media_fn(message.media_id)
+    except (WhatsAppError, requests.RequestException) as error:
+        logger.error(
+            "❌ Could not download WhatsApp image | media_id=%s error=%s",
+            message.media_id,
+            error,
+        )
+        send_fn(message.sender_id, DELIVERY_FAILURE_REPLY)
+        return None
+
+    if not isinstance(data, (bytes, bytearray)) or len(data) > MAX_IMAGE_FILE_SIZE:
+        send_fn(message.sender_id, OVERSIZED_DOCUMENT_REPLY)
+        return None
+
+    session_id = f"whatsapp:{message.sender_id}"
+    try:
+        description = describe_image_fn(data, mime_type, session_id)
+    except ImageReadError as error:
+        logger.warning(
+            "🖼 Could not describe WhatsApp image | media_id=%s error=%s",
+            message.media_id,
+            error,
+        )
+        send_fn(message.sender_id, UNREADABLE_IMAGE_REPLY)
+        return None
+
+    return build_image_user_text(description, message.caption)
 
 
 def get_settings():
@@ -213,7 +342,11 @@ def build_whatsapp_channel(
             selection_instruction,
             response_instruction,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=lambda: notify_list_processing(session_id),
         )
+
+    def notify_list_processing(session_id):
+        send_reply(session_id.split(":", 1)[1], LIST_PROCESSING_NOTICE)
 
     def save_reply(session_id, reply):
         return save_model_message(
@@ -287,6 +420,12 @@ def build_whatsapp_channel(
             lambda error: report_error(recipient, error),
         )
 
+    def clear_history(session_id):
+        coordinator.reset_session(
+            session_id,
+            lambda: reset_history(database_path, session_id),
+        )
+
     def download_document_media(media_id):
         return download_media(
             access_token,
@@ -297,6 +436,16 @@ def build_whatsapp_channel(
 
     def read_document(filename, data):
         return extract_document_text(filename, data)
+
+    def describe_image(data, mime_type, session_id):
+        return describe_image_bytes(
+            data,
+            mime_type,
+            get_vision_model(),
+            api_key,
+            database_path,
+            session_id,
+        )
 
     def process_message(message):
         handle_incoming_message(
@@ -310,8 +459,10 @@ def build_whatsapp_channel(
             lambda message_id: release_incoming_message(database_path, message_id),
             lambda session_id: is_message_allowed(database_path, session_id),
             submit_message,
+            reset_fn=clear_history,
             read_document_fn=read_document,
             download_media_fn=download_document_media,
+            describe_image_fn=describe_image,
             send_fn=send_reply,
         )
 

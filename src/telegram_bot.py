@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import requests
 
 from agent import AgentError
-from app_config import get_gemini_model
+from app_config import get_gemini_model, get_vision_model
 from app_logging import configure_logging, get_logger
 from config import load_env_file
 from database import (
@@ -26,6 +26,14 @@ from document_reader import (
     extract_document_text,
     is_supported_document,
 )
+from image_reader import (
+    MAX_IMAGE_FILE_SIZE,
+    ImageReadError,
+    build_image_user_text,
+    is_image,
+    resolve_mime_type,
+)
+from image_reader import describe_image as describe_image_bytes
 from message_guard import is_message_allowed
 from message_service import generate_customer_reply
 from product_search import ProductSearchError
@@ -41,8 +49,9 @@ CONVERSATION_LOG_PATH = (
 )
 POLL_TIMEOUT_SECONDS = 25
 MAX_MESSAGE_LENGTH = 4000
+PHOTO_MIME_TYPE = "image/jpeg"
 TEXT_ONLY_REPLY = (
-    "Hazırda yalnız mətn mesajlarını və .xlsx/.docx sənədlərini "
+    "Hazırda mətn mesajlarını, şəkilləri və .xlsx/.docx sənədlərini "
     "oxuya bilirəm."
 )
 UNSUPPORTED_DOCUMENT_REPLY = (
@@ -52,12 +61,19 @@ UNSUPPORTED_DOCUMENT_REPLY = (
 UNREADABLE_DOCUMENT_REPLY = (
     "Sənədi oxuya bilmirəm. Zəhmət olmasa faylı yenidən göndərin."
 )
+UNREADABLE_IMAGE_REPLY = (
+    "Şəkli emal edə bilmirəm. Zəhmət olmasa sorğunuzu mətn şəklində yazın."
+)
 OVERSIZED_DOCUMENT_REPLY = (
     "Fayl çox böyükdür. Zəhmət olmasa 5 MB-dan kiçik fayl göndərin."
 )
 DELIVERY_FAILURE_REPLY = (
     "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
     "yenidən cəhd edin."
+)
+LIST_PROCESSING_NOTICE = (
+    "Sorğunuz emal olunur, bu bir neçə dəqiqə çəkə bilər.\n"
+    "Ваш запрос обрабатывается, это может занять несколько минут."
 )
 logger = get_logger("telegram")
 
@@ -114,6 +130,7 @@ def handle_update(
     allow_fn=None,
     download_document_fn=None,
     read_document_fn=None,
+    describe_image_fn=None,
 ):
     if not isinstance(update, dict):
         return
@@ -129,6 +146,25 @@ def handle_update(
     if isinstance(chat_id, bool) or not isinstance(chat_id, int):
         return
 
+    photo = message.get("photo")
+    if isinstance(photo, list) and photo:
+        photo_size = _largest_photo_size(photo)
+        if photo_size is not None:
+            _handle_image_message(
+                message,
+                photo_size.get("file_id"),
+                PHOTO_MIME_TYPE,
+                photo_size.get("file_size"),
+                chat_id,
+                submit_fn,
+                send_fn,
+                allow_fn,
+                download_document_fn,
+                describe_image_fn,
+                "photo",
+            )
+            return
+
     document = message.get("document")
     if isinstance(document, dict):
         _handle_document_message(
@@ -140,6 +176,7 @@ def handle_update(
             allow_fn,
             download_document_fn,
             read_document_fn,
+            describe_image_fn,
         )
         return
 
@@ -192,6 +229,7 @@ def _handle_document_message(
     allow_fn,
     download_document_fn,
     read_document_fn,
+    describe_image_fn,
 ):
     session_id = f"telegram:{chat_id}"
     if allow_fn is not None and not allow_fn(session_id):
@@ -204,6 +242,23 @@ def _handle_document_message(
     file_name = document.get("file_name")
     if not isinstance(file_name, str) or not file_name.strip():
         file_name = "document"
+
+    mime_type = resolve_mime_type(file_name, document.get("mime_type"))
+    if is_image(mime_type, file_name):
+        _handle_image_message(
+            message,
+            document.get("file_id"),
+            mime_type,
+            document.get("file_size"),
+            chat_id,
+            submit_fn,
+            send_fn,
+            allow_fn,
+            download_document_fn,
+            describe_image_fn,
+            file_name,
+        )
+        return
 
     if not is_supported_document(file_name):
         logger.info(
@@ -262,11 +317,100 @@ def _handle_document_message(
     submit_fn(session_id, user_text, chat_id)
 
 
+def _handle_image_message(
+    message,
+    file_id,
+    mime_type,
+    file_size,
+    chat_id,
+    submit_fn,
+    send_fn,
+    allow_fn,
+    download_document_fn,
+    describe_image_fn,
+    source,
+):
+    session_id = f"telegram:{chat_id}"
+    if allow_fn is not None and not allow_fn(session_id):
+        logger.warning(
+            "🚫 Telegram session blocked by message guard | session=%s",
+            session_id,
+        )
+        return
+
+    if _is_oversized_image(file_size):
+        send_fn(chat_id, OVERSIZED_DOCUMENT_REPLY)
+        return
+
+    if not isinstance(file_id, str) or not file_id:
+        send_fn(chat_id, UNREADABLE_IMAGE_REPLY)
+        return
+
+    try:
+        data = download_document_fn(file_id)
+    except (TelegramError, requests.RequestException) as error:
+        logger.error(
+            "❌ Could not download Telegram image | source=%s error=%s",
+            source,
+            error,
+        )
+        send_fn(chat_id, DELIVERY_FAILURE_REPLY)
+        return
+
+    if _is_oversized_image(len(data)):
+        send_fn(chat_id, OVERSIZED_DOCUMENT_REPLY)
+        return
+
+    try:
+        description = describe_image_fn(data, mime_type, session_id)
+    except ImageReadError as error:
+        logger.warning(
+            "🖼 Could not describe Telegram image | source=%s error=%s",
+            source,
+            error,
+        )
+        send_fn(chat_id, UNREADABLE_IMAGE_REPLY)
+        return
+
+    user_text = build_image_user_text(description, message.get("caption"))
+    logger.info(
+        "🖼 Telegram image accepted | session=%s source=%s desc_chars=%d",
+        session_id,
+        source,
+        len(description),
+    )
+    submit_fn(session_id, user_text, chat_id)
+
+
+def _largest_photo_size(photo_sizes):
+    candidates = [
+        item
+        for item in photo_sizes
+        if isinstance(item, dict)
+        and isinstance(item.get("file_id"), str)
+        and item.get("file_id")
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+    )
+
+
 def _is_oversized_document(size):
     return (
         isinstance(size, int)
         and not isinstance(size, bool)
         and size > MAX_DOCUMENT_FILE_SIZE
+    )
+
+
+def _is_oversized_image(size):
+    return (
+        isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > MAX_IMAGE_FILE_SIZE
     )
 
 
@@ -350,7 +494,11 @@ def build_telegram_channel(
             selection_instruction,
             response_instruction,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=lambda: notify_list_processing(session_id),
         )
+
+    def notify_list_processing(session_id):
+        send_reply(session_id.split(":", 1)[1], LIST_PROCESSING_NOTICE)
 
     def save_reply(session_id, reply):
         return save_model_message(
@@ -430,6 +578,16 @@ def build_telegram_channel(
     def read_document(filename, data):
         return extract_document_text(filename, data)
 
+    def describe_image(data, mime_type, session_id):
+        return describe_image_bytes(
+            data,
+            mime_type,
+            get_vision_model(),
+            api_key,
+            database_path,
+            session_id,
+        )
+
     def process_update(update):
         handle_update(
             update,
@@ -439,6 +597,7 @@ def build_telegram_channel(
             lambda session_id: is_message_allowed(database_path, session_id),
             download_document_fn=download_document,
             read_document_fn=read_document,
+            describe_image_fn=describe_image,
         )
 
     stop_event = threading.Event()
