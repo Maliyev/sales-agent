@@ -106,6 +106,10 @@ def main():
         coordinator=coordinator,
     )
 
+    railway_port = os.getenv("PORT")
+    whatsapp_host = "0.0.0.0" if railway_port else "127.0.0.1"
+    whatsapp_port = int(railway_port) if railway_port else 8000
+
     whatsapp_channel = build_whatsapp_channel(
         DATABASE_PATH,
         model,
@@ -119,6 +123,8 @@ def main():
         verify_token=whatsapp_settings["WHATSAPP_VERIFY_TOKEN"],
         app_secret=whatsapp_settings["WHATSAPP_APP_SECRET"],
         coordinator=coordinator,
+        host=whatsapp_host,
+        port=whatsapp_port,
     )
 
     admin_channel = build_admin_channel(DATABASE_PATH)
