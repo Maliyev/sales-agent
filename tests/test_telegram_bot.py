@@ -1,16 +1,18 @@
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import requests
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from telegram_bot import (
+    LIST_PROCESSING_NOTICE,
     MAX_MESSAGE_LENGTH,
     TelegramError,
     _download_document,
+    build_telegram_channel,
     deliver_agent_reply,
     get_updates,
     handle_update,
@@ -23,6 +25,35 @@ from image_reader import ImageReadError, build_image_user_text
 
 
 class TelegramBotTests(unittest.TestCase):
+    @patch("telegram_bot.SessionCoordinator")
+    @patch("telegram_bot.send_message")
+    @patch("telegram_bot.generate_customer_reply")
+    def test_the_list_processing_notice_is_sent_to_the_session_chat(
+        self, generate_reply, send_message_mock, coordinator
+    ):
+        build_telegram_channel(
+            "database.db",
+            "model",
+            "key",
+            "token",
+            "system",
+            "selection",
+            "response",
+        )
+
+        create_reply = coordinator.call_args.args[0]
+        create_reply("telegram:555", "Hello", None)
+
+        self.assertTrue(generate_reply.called)
+        notify = generate_reply.call_args.kwargs["list_start_notify_fn"]
+        notify()
+
+        send_message_mock.assert_called_once_with(
+            "token",
+            "555",
+            LIST_PROCESSING_NOTICE,
+        )
+
     def test_delivers_customer_and_operator_messages_separately(self):
         customer_messages = []
         operator_messages = []

@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -105,6 +106,7 @@ class AgentTests(unittest.TestCase):
         product_data_fn=None,
         final_system_instruction=None,
         user_text="At least 200 volts",
+        list_start_notify_fn=None,
     ):
         if search_fn is None:
             search_fn = lambda query, max_results: self.results
@@ -123,6 +125,7 @@ class AgentTests(unittest.TestCase):
             search_fn=search_fn,
             product_data_fn=product_data_fn,
             generate_fn=gemini,
+            list_start_notify_fn=list_start_notify_fn,
         )
 
     def tearDown(self):
@@ -970,6 +973,76 @@ class AgentTests(unittest.TestCase):
         ]
         self.assertEqual(first_results[0]["candidate_id"], 1)
         self.assertEqual(second_results[0]["candidate_id"], 2)
+
+    def test_notifies_once_when_the_product_list_cycle_starts(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("The first search found the diode."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Found diode 1N4007 for 0.1 AZN."),
+                text_response("No relay matches in the catalog."),
+                text_response("Full report below."),
+            ]
+        )
+        notify = Mock()
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+            list_start_notify_fn=notify,
+        )
+
+        self.assertEqual(reply, AgentReply("Full report below."))
+        notify.assert_called_once_with()
+
+    def test_does_not_notify_without_a_product_list(self):
+        gemini = FakeGemini([text_response("Please specify the package.")])
+        notify = Mock()
+
+        self.call_agent(gemini, list_start_notify_fn=notify)
+
+        notify.assert_not_called()
+
+    def test_a_failed_list_notification_does_not_break_the_pipeline(self):
+        gemini = FakeGemini(
+            [
+                function_response("start_product_list", {"count": 2}),
+                function_response("search_products", {"query": "diode"}),
+                text_response("The first search found the diode."),
+                function_response(
+                    "select_product_candidates",
+                    {
+                        "candidate_ids": [1],
+                        "needs_clarification": False,
+                        "clarifying_question": "",
+                    },
+                ),
+                text_response("Found diode 1N4007 for 0.1 AZN."),
+                text_response("No relay matches in the catalog."),
+                text_response("Full report below."),
+            ]
+        )
+        notify = Mock(side_effect=RuntimeError("send failed"))
+
+        reply = self.call_agent(
+            gemini,
+            final_system_instruction="final system prompt",
+            user_text="Please check: 1) diode 2) relay",
+            list_start_notify_fn=notify,
+        )
+
+        self.assertEqual(reply, AgentReply("Full report below."))
+        notify.assert_called_once_with()
 
     def test_rejects_an_unknown_tool_after_a_search_round(self):
         gemini = FakeGemini(

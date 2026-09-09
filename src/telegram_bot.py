@@ -71,6 +71,10 @@ DELIVERY_FAILURE_REPLY = (
     "Hazırda cavab verə bilmirəm. Zəhmət olmasa bir az sonra "
     "yenidən cəhd edin."
 )
+LIST_PROCESSING_NOTICE = (
+    "Sorğunuz emal olunur, bu bir neçə dəqiqə çəkə bilər.\n"
+    "Ваш запрос обрабатывается, это может занять несколько минут."
+)
 logger = get_logger("telegram")
 
 
@@ -490,7 +494,11 @@ def build_telegram_channel(
             selection_instruction,
             response_instruction,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=lambda: notify_list_processing(session_id),
         )
+
+    def notify_list_processing(session_id):
+        send_reply(session_id.split(":", 1)[1], LIST_PROCESSING_NOTICE)
 
     def save_reply(session_id, reply):
         return save_model_message(

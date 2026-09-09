@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -96,6 +96,40 @@ class MessageServiceTests(unittest.TestCase):
             status="RESPONSE_READY",
         )
         update_messages_status.assert_not_called()
+
+    @patch("message_service.save_model_message", return_value=9)
+    @patch("message_service.insert_incoming_message", return_value=8)
+    @patch(
+        "message_service.get_agent_reply",
+        return_value=AgentReply("Agent reply"),
+    )
+    @patch("message_service.load_history", return_value=[{"role": "user"}])
+    def test_passes_the_list_start_notifier_to_the_agent(
+        self,
+        load_history,
+        get_agent_reply,
+        insert_incoming_message,
+        save_model_message,
+    ):
+        notify = Mock()
+
+        generate_customer_reply(
+            "database.db",
+            "telegram:123",
+            "Hello",
+            "model",
+            "key",
+            "system",
+            "selection",
+            "response",
+            in_reply_to_message_id=8,
+            list_start_notify_fn=notify,
+        )
+
+        self.assertEqual(
+            get_agent_reply.call_args.kwargs["list_start_notify_fn"],
+            notify,
+        )
 
 
 class ContextOverflowTests(unittest.TestCase):

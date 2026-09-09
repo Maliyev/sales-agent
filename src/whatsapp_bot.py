@@ -81,6 +81,10 @@ GREETING_REPLY = (
 )
 SESSION_RESET_REPLY = "Söhbət tarixçəsi silindi."
 UNKNOWN_COMMAND_REPLY = "Naməlum əmr. Mövcud əmr: /reset"
+LIST_PROCESSING_NOTICE = (
+    "Sorğunuz emal olunur, bu bir neçə dəqiqə çəkə bilər.\n"
+    "Ваш запрос обрабатывается, это может занять несколько минут."
+)
 logger = get_logger("whatsapp")
 
 
@@ -338,7 +342,11 @@ def build_whatsapp_channel(
             selection_instruction,
             response_instruction,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=lambda: notify_list_processing(session_id),
         )
+
+    def notify_list_processing(session_id):
+        send_reply(session_id.split(":", 1)[1], LIST_PROCESSING_NOTICE)
 
     def save_reply(session_id, reply):
         return save_model_message(

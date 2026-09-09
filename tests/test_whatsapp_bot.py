@@ -1,14 +1,18 @@
+from pathlib import Path
 import sys
 import unittest
-from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from document_reader import DocumentReadError, build_document_user_text
 from image_reader import ImageReadError, build_image_user_text
-from whatsapp_bot import handle_incoming_message
+from whatsapp_bot import (
+    LIST_PROCESSING_NOTICE,
+    build_whatsapp_channel,
+    handle_incoming_message,
+)
 from whatsapp_client import WhatsAppError
 from whatsapp_webhook import (
     WhatsAppDocumentMessage,
@@ -18,6 +22,41 @@ from whatsapp_webhook import (
 
 
 class WhatsAppBotTests(unittest.TestCase):
+    @patch("whatsapp_bot.SessionCoordinator")
+    @patch("whatsapp_bot.send_text_message")
+    @patch("whatsapp_bot.generate_customer_reply")
+    def test_the_list_processing_notice_is_sent_to_the_session_recipient(
+        self, generate_reply, send_text_message_mock, coordinator
+    ):
+        build_whatsapp_channel(
+            "database.db",
+            "model",
+            "key",
+            "system",
+            "selection",
+            "response",
+            "token",
+            "1242528055613330",
+            "v25.0",
+            "verify",
+            "secret",
+        )
+
+        create_reply = coordinator.call_args.args[0]
+        create_reply("whatsapp:994501234567", "Hello", None)
+
+        self.assertTrue(generate_reply.called)
+        notify = generate_reply.call_args.kwargs["list_start_notify_fn"]
+        notify()
+
+        send_text_message_mock.assert_called_once_with(
+            "token",
+            "1242528055613330",
+            "994501234567",
+            LIST_PROCESSING_NOTICE,
+            "v25.0",
+        )
+
     def setUp(self):
         self.message = WhatsAppTextMessage(
             message_id="wamid.123",
