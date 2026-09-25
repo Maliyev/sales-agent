@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
             "auto_compaction": False,
             "compaction_model": "",
             "context_token_limit": 0,
+            "list_context_token_limit": 10000,
         },
     },
 }
@@ -252,6 +253,11 @@ def get_context_token_limit():
     return get_config()["limits"]["context_overflow"].get("context_token_limit", 0)
 
 
+def get_list_context_token_limit():
+    context = get_config()["limits"].get("context_overflow", {})
+    return context.get("list_context_token_limit", context.get("context_token_limit", 0))
+
+
 def get_max_search_rounds():
     return get_config()["limits"].get("max_search_rounds", 3)
 
@@ -405,6 +411,10 @@ def _validate_config(config):
     _validate_non_negative_int(
         context_overflow.get("context_token_limit"),
         "limits.context_overflow.context_token_limit",
+    )
+    _validate_non_negative_int(
+        context_overflow.get("list_context_token_limit"),
+        "limits.context_overflow.list_context_token_limit",
     )
 
 

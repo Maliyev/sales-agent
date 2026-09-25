@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from agent_reply import AgentReply
 from app_config import (
+    get_list_context_token_limit,
     get_list_mode_enabled,
     get_max_api_calls_per_reply,
     get_max_search_rounds,
@@ -184,6 +185,7 @@ def get_agent_reply(
     if final_system_instruction is None:
         final_system_instruction = load_final_system_instruction()
     max_search_rounds = get_max_search_rounds()
+    budget = {"used": 0, "limit": get_max_api_calls_per_reply(), "list_mode": False}
     call_decision = _build_model_call(
         generate_fn,
         usage_fn,
@@ -193,6 +195,7 @@ def get_agent_reply(
         "decision",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
     call_selection = _build_model_call(
         generate_fn,
@@ -203,6 +206,7 @@ def get_agent_reply(
         "selection",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
     call_final = _build_model_call(
         generate_fn,
@@ -213,8 +217,8 @@ def get_agent_reply(
         "final",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
-    budget = {"used": 0, "limit": get_max_api_calls_per_reply()}
     list_addenda = load_list_mode_addenda()
 
     product_urls = _extract_product_urls(user_text)
@@ -264,6 +268,7 @@ def get_agent_reply(
         return reply
 
     total = reply.count
+    budget["list_mode"] = True
     _log_step(session_id, "LIST_START", f"total={total}")
     _notify_list_start(list_start_notify_fn)
     item_notes = []
@@ -542,13 +547,20 @@ def _build_model_call(
     purpose,
     tpm_limit,
     record_model_prefix,
+    budget,
 ):
     if database_path is None:
         return generate_fn
 
     def call_model(history, model_name, api_key, system_instruction, **kwargs):
         estimated_tokens = _estimate_tokens(history, system_instruction)
-        wait_for_token_budget(database_path, estimated_tokens, tpm_limit=tpm_limit)
+        context_limit = get_list_context_token_limit() if budget["list_mode"] else None
+        wait_for_token_budget(
+            database_path,
+            estimated_tokens,
+            tpm_limit=tpm_limit,
+            context_limit=context_limit,
+        )
 
         started_at = time.monotonic()
         try:

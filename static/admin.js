@@ -236,7 +236,7 @@ const labels = {model:"Модель",vision_model:"Модель для изоб�
   enabled:"Включено",reasoning_effort:"Thinking effort",allowed_numbers:"Разрешённые номера (+...) ～ по одному на строку",
   max_search_rounds:"Раунды поиска",max_api_calls_per_reply:"Вызовы API за ответ",list_mode_enabled:"Режим списка",
   max_messages:"Максимум сообщений",window_seconds:"Окно, секунд",limit:"Лимит токенов",auto_reset:"Автосброс",
-  auto_compaction:"Автосжатие",compaction_model:"Модель сжатия",context_token_limit:"Порог контекста, токенов",
+  auto_compaction:"Автосжатие",compaction_model:"Модель сжатия",context_token_limit:"Порог контекста, токенов",list_context_token_limit:"Порог контекста списка, токенов",
   delays:"Задержки, секунды",max_wait_seconds:"Максимальное ожидание, секунд"};
 const groupTitles = {retry:"Повторные попытки",message_rate:"Частота сообщений",token_abuse:"Злоупотребление токенами",context_overflow:"Контекст и сжатие"};
 function settingsField(path, value) {
