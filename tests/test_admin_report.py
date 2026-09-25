@@ -1,6 +1,8 @@
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -10,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import admin_report
+from database import initialize_database
 
 
 BAKU = timezone(timedelta(hours=4))
@@ -54,16 +57,20 @@ class AdminReportTests(unittest.TestCase):
                 "26-09-24 08:00:00 | whatsapp:one | 💬 USER | Salam\n",
                 encoding="utf-8",
             )
+            database_path = Path(folder) / "agent.db"
+            initialize_database(database_path)
             calls = []
 
             def fake_generate(history, model, key, prompt, **kwargs):
                 calls.append((history, model, key, prompt, kwargs))
                 return {"candidates": [{"content": {"parts": [{"text": "Краткий отчёт"}]}}],
-                        "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20}}
+                        "usageMetadata": {"promptTokenCount": 100,
+                                          "candidatesTokenCount": 20,
+                                          "costUsd": 0.003}}
 
             with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
                 result = admin_report.generate_report(
-                    1, path, generate_fn=fake_generate,
+                    1, path, database_path=database_path, generate_fn=fake_generate,
                     now=datetime(2026, 9, 24, 16, tzinfo=BAKU),
                     log_timezone=timezone.utc,
                 )
@@ -72,6 +79,9 @@ class AdminReportTests(unittest.TestCase):
             self.assertEqual(calls[0][1], "z-ai/glm-5.3-flash")
             self.assertEqual(calls[0][4]["reasoning_effort"], "low")
             self.assertIn("Salam", calls[0][0][0]["parts"][0]["text"])
+            with closing(sqlite3.connect(database_path)) as connection:
+                cost = connection.execute("SELECT cost_usd FROM api_calls").fetchone()[0]
+            self.assertEqual(cost, 0.003)
 
     def test_oversized_log_is_rejected_before_api_call(self):
         with tempfile.TemporaryDirectory() as folder:

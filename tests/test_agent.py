@@ -1121,7 +1121,7 @@ class AgentTests(unittest.TestCase):
         )
         item1_system = gemini.calls[1]["system_instruction"]
         self.assertIn("`2` items in total", item1_system)
-        self.assertIn("working on item `1`", item1_system)
+        self.assertRegex(item1_system, r"processing item\s+`1`")
         item1_declarations = gemini.calls[1]["kwargs"]["tools"][0][
             "functionDeclarations"
         ]
@@ -1133,7 +1133,7 @@ class AgentTests(unittest.TestCase):
         self.assertIn("base prompt", item1_selection_system)
         self.assertIn("selection prompt", item1_selection_system)
         self.assertIn(
-            "covers ONLY the current item",
+            "Select candidates ONLY for the current item",
             item1_selection_system,
         )
         item1_final_system = gemini.calls[4]["system_instruction"]
@@ -1142,7 +1142,7 @@ class AgentTests(unittest.TestCase):
         self.assertIn("`1` of `2`", item1_final_system)
         self.assertNotIn("response prompt", item1_final_system)
         item2_system = gemini.calls[5]["system_instruction"]
-        self.assertIn("working on item `2`", item2_system)
+        self.assertRegex(item2_system, r"processing item\s+`2`")
         report_call = gemini.calls[6]
         self.assertIn("response prompt", report_call["system_instruction"])
         self.assertIn(
@@ -1348,6 +1348,7 @@ class ApiCallRecordingTests(unittest.TestCase):
                 "usageMetadata": {
                     "promptTokenCount": 120,
                     "candidatesTokenCount": 30,
+                    "costUsd": 0.0012,
                 },
             }
 
@@ -1370,6 +1371,9 @@ class ApiCallRecordingTests(unittest.TestCase):
             self.read_api_calls(),
             [("decision", "ok", 120, 30, self.message_id, None)],
         )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            cost = connection.execute("SELECT cost_usd FROM api_calls").fetchone()[0]
+        self.assertEqual(cost, 0.0012)
 
     def test_records_a_failed_model_call_and_reraises(self):
         def generate_fn(history, model, api_key, system_instruction, **kwargs):

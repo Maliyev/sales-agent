@@ -21,6 +21,7 @@ from database import (
     migration_001_initial_schema,
     migration_002_api_calls,
     migration_003_compaction_api_calls,
+    migration_006_api_call_cost,
     record_api_call,
     reset_history,
     run_database_operation,
@@ -78,7 +79,7 @@ class DatabaseSchemaTests(unittest.TestCase):
             }
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertIn("api_calls", names)
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
 
     def test_reinitializing_an_up_to_date_database_changes_nothing(self):
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -92,8 +93,17 @@ class DatabaseSchemaTests(unittest.TestCase):
             version_after = connection.execute(
                 "PRAGMA user_version"
             ).fetchone()[0]
-        self.assertEqual(version_before, 5)
-        self.assertEqual(version_after, 5)
+        self.assertEqual(version_before, 6)
+        self.assertEqual(version_after, 6)
+
+    def test_cost_migration_preserves_existing_calls(self):
+        with closing(sqlite3.connect(":memory:")) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("CREATE TABLE api_calls (id INTEGER PRIMARY KEY, model TEXT)")
+            connection.execute("INSERT INTO api_calls (model) VALUES ('openrouter:z-ai/glm')")
+            migration_006_api_call_cost(connection)
+            row = connection.execute("SELECT model, cost_usd FROM api_calls").fetchone()
+        self.assertEqual(tuple(row), ("openrouter:z-ai/glm", None))
 
     def test_saved_exchanges_get_delivered_status_and_visible_by_default(self):
         save_exchange(self.database_path, "telegram:1", "Hello", "Hi")
@@ -397,7 +407,7 @@ class CompactionStorageTests(unittest.TestCase):
             rows = connection.execute(
                 "SELECT purpose FROM api_calls"
             ).fetchall()
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertEqual(rows, [("compaction",)])
 
     def test_migration_adds_vision_purpose_to_a_version_3_database(self):
@@ -427,7 +437,7 @@ class CompactionStorageTests(unittest.TestCase):
             rows = connection.execute(
                 "SELECT purpose, prompt_tokens, completion_tokens FROM api_calls"
             ).fetchall()
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertEqual(rows, [("vision", 90, 30)])
 
     def test_add_history_summary_archives_messages_and_inserts_a_tool_row(self):

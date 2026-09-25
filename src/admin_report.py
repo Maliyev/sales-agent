@@ -141,7 +141,8 @@ def generate_report(days, log_path, database_path=None, generate_fn=generate_con
     usage = response.get("usageMetadata") or {}
     _record_usage(database_path, usage.get("promptTokenCount", 0),
                   usage.get("candidatesTokenCount", 0),
-                  int((time.monotonic() - started) * 1000), "ok")
+                  int((time.monotonic() - started) * 1000), "ok",
+                  cost_usd=usage.get("costUsd"))
     parts = response["candidates"][0]["content"]["parts"]
     report = "\n".join(part["text"] for part in parts if isinstance(part.get("text"), str)).strip()
     if not report:
@@ -151,7 +152,8 @@ def generate_report(days, log_path, database_path=None, generate_fn=generate_con
     return result
 
 
-def _record_usage(database_path, prompt_tokens, completion_tokens, duration_ms, status):
+def _record_usage(database_path, prompt_tokens, completion_tokens, duration_ms, status,
+                  cost_usd=None):
     if database_path is None:
         return
     try:
@@ -159,6 +161,6 @@ def _record_usage(database_path, prompt_tokens, completion_tokens, duration_ms, 
         record_api_call(database_path, REPORT_SESSION_ID, None, "final",
                         f"openrouter:{MODEL}", prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens, duration_ms=duration_ms,
-                        status=status)
+                        status=status, cost_usd=cost_usd)
     except DatabaseError:
         logger.exception("Could not record admin report API usage")

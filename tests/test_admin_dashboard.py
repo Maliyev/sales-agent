@@ -68,7 +68,7 @@ class AdminDatabaseTests(unittest.TestCase):
                         completion_tokens=300)
         record_api_call(self.database_path, "whatsapp:994", user_id, "final",
                         "openrouter:z-ai/glm-5.3-flash", prompt_tokens=9000,
-                        completion_tokens=500)
+                        completion_tokens=500, cost_usd=0.0025)
 
         overview = dashboard_overview(self.database_path, 24)
 
@@ -77,6 +77,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(overview["totals"]["llm_api_calls"], 2)
         self.assertEqual(overview["totals"]["input"], 17000)
         self.assertEqual(overview["openrouter"]["total"], 9500)
+        self.assertEqual(overview["openrouter"]["cost_usd"], 0.0025)
+        self.assertEqual(overview["openrouter"]["priced_calls"], 1)
 
     def test_report_api_usage_counts_without_appearing_as_customer_chat(self):
         create_session(self.database_path, "admin:report")
@@ -87,6 +89,7 @@ class AdminDatabaseTests(unittest.TestCase):
         overview = dashboard_overview(self.database_path, 24)
         self.assertEqual(overview["totals"]["llm_api_calls"], 1)
         self.assertEqual(overview["openrouter"]["total"], 550)
+        self.assertEqual(overview["openrouter"]["priced_calls"], 0)
         self.assertEqual(overview["top_sessions"], [])
 
 

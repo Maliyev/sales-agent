@@ -270,12 +270,19 @@ def migration_005_agent_turns(connection):
     )
 
 
+def migration_006_api_call_cost(connection):
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(api_calls)")}
+    if "cost_usd" not in columns:
+        connection.execute("ALTER TABLE api_calls ADD COLUMN cost_usd REAL")
+
+
 MIGRATIONS = (
     migration_001_initial_schema,
     migration_002_api_calls,
     migration_003_compaction_api_calls,
     migration_004_vision_api_calls,
     migration_005_agent_turns,
+    migration_006_api_call_cost,
 )
 
 
@@ -585,7 +592,7 @@ def dashboard_overview(database_path, hours):
     def read(connection):
         calls = connection.execute(
             """
-            SELECT session_id, model, prompt_tokens, completion_tokens, created_at
+            SELECT session_id, model, prompt_tokens, completion_tokens, cost_usd, created_at
             FROM api_calls WHERE created_at >= ?
             """,
             (cutoff,),
@@ -600,7 +607,7 @@ def dashboard_overview(database_path, hours):
         ).fetchall()
         totals = dict(input=0, output=0, customer_messages=len(messages),
                       agent_turns=len(turns), llm_api_calls=len(calls), openrouter_api_calls=0)
-        openrouter = dict(input=0, output=0, calls=0)
+        openrouter = dict(input=0, output=0, calls=0, cost_usd=0.0, priced_calls=0)
         series = {}
         ranking = {}
 
@@ -628,6 +635,9 @@ def dashboard_overview(database_path, hours):
                 openrouter["input"] += prompt
                 openrouter["output"] += completion
                 openrouter["calls"] += 1
+                if row["cost_usd"] is not None:
+                    openrouter["cost_usd"] += row["cost_usd"]
+                    openrouter["priced_calls"] += 1
                 totals["openrouter_api_calls"] += 1
         for row in messages:
             point(row["created_at"])["customer_messages"] += 1
@@ -720,6 +730,7 @@ def record_api_call(
     duration_ms=None,
     status="ok",
     error=None,
+    cost_usd=None,
 ):
     session_id = validate_session_id(session_id)
     if not isinstance(model, str) or not model.strip():
@@ -730,6 +741,13 @@ def record_api_call(
         isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float))
     ):
         raise DatabaseError("Duration must be a number.")
+    if cost_usd is not None and (
+        isinstance(cost_usd, bool)
+        or not isinstance(cost_usd, (int, float))
+        or not math.isfinite(cost_usd)
+        or cost_usd < 0
+    ):
+        raise DatabaseError("Cost must be a non-negative finite number.")
 
     def add_call(connection):
         cursor = connection.execute(
@@ -743,9 +761,10 @@ def record_api_call(
                 completion_tokens,
                 duration_ms,
                 status,
-                error
+                error,
+                cost_usd
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -757,6 +776,7 @@ def record_api_call(
                 int(duration_ms) if duration_ms is not None else None,
                 status,
                 error,
+                cost_usd,
             ),
         )
         return cursor.lastrowid

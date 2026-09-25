@@ -81,7 +81,7 @@ class OpenRouterAdapterTests(unittest.TestCase):
     def test_converts_text_completion_and_usage(self, post):
         post.return_value.json.return_value = {
             "choices": [{"message": {"content": "Hello", "tool_calls": None}}],
-            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3, "cost": 0.00042},
         }
 
         result = generate_content(
@@ -97,6 +97,7 @@ class OpenRouterAdapterTests(unittest.TestCase):
             get_usage_metadata(result),
             {"prompt_tokens": 12, "completion_tokens": 3},
         )
+        self.assertEqual(result["usageMetadata"]["costUsd"], 0.00042)
         self.assertEqual(
             post.call_args.kwargs["json"]["messages"],
             [

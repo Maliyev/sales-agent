@@ -35,7 +35,7 @@ function show(view) {
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => show(button.dataset.view)));
 
 function stat(label, value, hint) {
-  const card = node("div", "stat"); card.append(node("span", "label", label), node("strong", "", number(value)));
+  const card = node("div", "stat"); card.append(node("span", "label", label), node("strong", "", typeof value === "string" ? value : number(value)));
   if (hint) card.append(node("span", "hint", hint));
   return card;
 }
@@ -80,7 +80,10 @@ async function loadOverview() {
       stat("Input tokens", t.input), stat("Output tokens", t.output), stat("Total tokens", t.total),
       stat("Customer messages", t.customer_messages), stat("Agent turns", t.agent_turns),
       stat("LLM API calls", t.llm_api_calls), stat("OpenRouter API calls", t.openrouter_api_calls));
-    $("openrouterStats").replaceChildren(stat("Input", o.input), stat("Output", o.output), stat("Total", o.total));
+    const cost = o.priced_calls ? `$${Number(o.cost_usd).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:8})}` : "—";
+    $("openrouterStats").replaceChildren(
+      stat("Input", o.input), stat("Output", o.output), stat("Total", o.total),
+      stat("Расход, USD", cost, `Цена известна для ${o.priced_calls} из ${o.calls} вызовов`));
     drawChart("tokenChart", data.series, [{key:"input",name:"Input tokens",color:"#5ad7c1"},{key:"output",name:"Output tokens",color:"#729aff"}]);
     drawChart("activityChart", data.series, [{key:"customer_messages",name:"Customer messages",color:"#5ad7c1"},{key:"agent_turns",name:"Agent turns",color:"#729aff"},{key:"llm_api_calls",name:"LLM API calls",color:"#eebd72"}]);
     const top = $("topSessions"); top.replaceChildren();

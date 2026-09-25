@@ -1,6 +1,7 @@
 """OpenRouter chat completion adapter for the agent's Gemini-shaped messages."""
 
 import json
+import math
 
 import requests
 
@@ -217,11 +218,20 @@ def _to_gemini_response(data):
         if not parts:
             raise ValueError("The model returned no text or tool call.")
         usage = data.get("usage") or {}
+        cost = usage.get("cost")
+        if (
+            isinstance(cost, bool)
+            or not isinstance(cost, (int, float))
+            or not math.isfinite(cost)
+            or cost < 0
+        ):
+            cost = None
         return {
             "candidates": [{"content": {"parts": parts}}],
             "usageMetadata": {
                 "promptTokenCount": usage.get("prompt_tokens", 0),
                 "candidatesTokenCount": usage.get("completion_tokens", 0),
+                "costUsd": cost,
             },
         }
     except (KeyError, IndexError, TypeError, ValueError) as error:
