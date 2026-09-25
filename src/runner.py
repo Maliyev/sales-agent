@@ -67,6 +67,12 @@ def main():
         return
 
     def create_reply(session_id, user_text, in_reply_to_message_id):
+        def notify_list_processing():
+            if session_id.startswith("telegram:"):
+                telegram_channel.notify_list_processing(session_id)
+            elif session_id.startswith("whatsapp:"):
+                whatsapp_channel.notify_list_processing(session_id)
+
         return generate_customer_reply(
             DATABASE_PATH,
             session_id,
@@ -77,6 +83,7 @@ def main():
             selection_instruction,
             response_instruction,
             in_reply_to_message_id=in_reply_to_message_id,
+            list_start_notify_fn=notify_list_processing,
         )
 
     def save_reply(session_id, reply):
