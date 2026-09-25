@@ -571,7 +571,9 @@ def record_api_call(
     return run_database_operation(database_path, add_call)
 
 
-def sum_tokens_in_window(database_path, seconds, session_id=None, now=None):
+def sum_tokens_in_window(
+    database_path, seconds, session_id=None, now=None, exclude_model_prefix=None
+):
     if (
         isinstance(seconds, bool)
         or not isinstance(seconds, (int, float))
@@ -588,14 +590,24 @@ def sum_tokens_in_window(database_path, seconds, session_id=None, now=None):
             "%Y-%m-%d %H:%M:%S"
         )
         if session_id is None:
-            row = connection.execute(
-                """
-                SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
-                FROM api_calls
-                WHERE created_at >= ?
-                """,
-                (cutoff,),
-            ).fetchone()
+            if exclude_model_prefix is None:
+                row = connection.execute(
+                    """
+                    SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+                    FROM api_calls
+                    WHERE created_at >= ?
+                    """,
+                    (cutoff,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+                    FROM api_calls
+                    WHERE created_at >= ? AND model NOT LIKE ?
+                    """,
+                    (cutoff, f"{exclude_model_prefix}%"),
+                ).fetchone()
         else:
             row = connection.execute(
                 """

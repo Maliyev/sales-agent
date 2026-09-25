@@ -341,6 +341,12 @@ root (secrets stay in `.env`). Complete reference:
       "max_wait_seconds": 600
     }
   },
+  "openrouter": {
+    "enabled": true,
+    "model": "z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "allowed_numbers": ["+994501234567"]
+  },
   "limits": {
     "max_search_rounds": 3,
     "max_api_calls_per_reply": 70,
@@ -362,11 +368,30 @@ root (secrets stay in `.env`). Complete reference:
 ```
 
 - `gemini.model` — the Gemini model name (moved out of `.env`).
+- `openrouter.enabled` — routes only the exact WhatsApp sender IDs in
+  `allowed_numbers` to OpenRouter. Telegram and all other WhatsApp sessions
+  always use Gemini. Set to `false` to disable the paid route.
+- `openrouter.model` — the OpenRouter model slug. The current choice is
+  [`z-ai/glm-5.3-flash`](https://openrouter.ai/z-ai/glm-5.3-flash). The API key
+  belongs in `OPENROUTER_API_KEY` in `.env` locally and in Railway's environment
+  variables in production. It must never be placed in `config.json` or Git.
+  If the key is missing, an allowed session fails without calling either
+  provider; other sessions continue on Gemini.
+- `openrouter.allowed_numbers` — exact E.164 phone numbers, with `+` and no
+  spaces. The WhatsApp sender ID must match all digits exactly. Model calls
+  made through OpenRouter appear in `api_calls.model` with an `openrouter:`
+  prefix. Image descriptions and history compaction continue to use Gemini.
+- `openrouter.reasoning_effort` — `low`, `high`, or `max` for GLM-5.3-Flash.
+  Higher effort can take longer and use more output tokens. To use
+  `openai/gpt-6-luna` with the current Chat Completions adapter, set this to
+  `none`: Luna's tool calling on that API does not support reasoning effort
+  above `none`. The application rejects incompatible combinations at startup.
 - `gemini.vision_model` — the model used to describe customer photos; an
   empty string falls back to `gemini.model`. The description call is recorded
   in `api_calls` with the `vision` purpose.
-- `gemini.tpm_limit` — an estimated tokens-per-minute budget across all
-  sessions. `0` disables it. When a request would exceed the budget, the
+- `gemini.tpm_limit` — an estimated tokens-per-minute budget for Gemini calls
+  across all sessions; OpenRouter calls do not consume it. `0` disables it.
+  When a request would exceed the budget, the
   worker waits and retries every few seconds until the current minute window
   frees up; after 10 minutes of waiting the turn fails. A single request that
   is larger than the whole budget can never fit, so it fails fast instead of
@@ -393,7 +418,7 @@ root (secrets stay in `.env`). Complete reference:
   and can refine the query, refer the customer to the operator, or move on to
   product selection. When the limit is reached the best candidates so far are
   selected; searches also stop early once the model is satisfied.
-- `limits.max_api_calls_per_reply` — the maximum number of Gemini calls a
+- `limits.max_api_calls_per_reply` — the maximum number of model calls a
   single reply may consume across all stages (70 by default). A regular
   reply needs at most 6 calls (up to 3 searches, selection, final), so the
   limit only matters for product lists: a list of 10 items costs roughly
