@@ -584,10 +584,11 @@ def record_agent_turn(database_path, session_id):
 def dashboard_overview(database_path, hours):
     if hours not in (24, 168, 720):
         raise DatabaseError("Unsupported period.")
-    cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=hours)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    now = datetime.now(tz=timezone.utc)
+    cutoff_at = now - timedelta(hours=hours)
+    cutoff = cutoff_at.strftime("%Y-%m-%d %H:%M:%S")
     bucket = "%Y-%m-%d %H:00" if hours == 24 else "%Y-%m-%d"
+    baku = timezone(timedelta(hours=4))
 
     def read(connection):
         calls = connection.execute(
@@ -612,7 +613,8 @@ def dashboard_overview(database_path, hours):
         ranking = {}
 
         def point(timestamp):
-            key = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").strftime(bucket)
+            moment = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            key = moment.replace(tzinfo=timezone.utc).astimezone(baku).strftime(bucket)
             return series.setdefault(key, dict(period=key, input=0, output=0,
                                                customer_messages=0, agent_turns=0,
                                                llm_api_calls=0))
@@ -647,6 +649,18 @@ def dashboard_overview(database_path, hours):
             rank(row["session_id"])["agent_turns"] += 1
         totals["total"] = totals["input"] + totals["output"]
         openrouter["total"] = openrouter["input"] + openrouter["output"]
+        first = cutoff_at.astimezone(baku).replace(minute=0, second=0, microsecond=0)
+        last = now.astimezone(baku)
+        if hours != 24:
+            first = first.replace(hour=0)
+        step = timedelta(hours=1) if hours == 24 else timedelta(days=1)
+        cursor = first
+        while cursor <= last:
+            key = cursor.strftime(bucket)
+            series.setdefault(key, dict(period=key, input=0, output=0,
+                                        customer_messages=0, agent_turns=0,
+                                        llm_api_calls=0))
+            cursor += step
         return dict(totals=totals, openrouter=openrouter,
                     series=[series[key] for key in sorted(series)],
                     top_sessions=sorted(ranking.values(), key=lambda item: item["tokens"],

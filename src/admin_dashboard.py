@@ -20,7 +20,15 @@ from database import (
     save_model_message, session_exists, unblock_session, validate_session_id,
 )
 from gemini import CHARACTERS_PER_TOKEN
-from prompts import load_system_instruction
+from prompts import (
+    PromptError,
+    PromptNotFoundError,
+    PromptValidationError,
+    list_editable_prompts,
+    load_system_instruction,
+    read_editable_prompt,
+    save_editable_prompt,
+)
 from telegram_bot import TelegramError, send_message as send_telegram_message
 from whatsapp_client import WhatsAppError, send_text_message
 
@@ -54,8 +62,7 @@ def _admin_session_id(value):
 
 
 def register_admin_routes(app, database_path, send_fn=None, coordinator=None,
-                          reset_fn=None, log_path=CONVERSATION_LOG_PATH,
-                          system_instruction=None):
+                          reset_fn=None, log_path=CONVERSATION_LOG_PATH):
     password = os.getenv("ADMIN_PASSWORD")
     secret_key = os.getenv("ADMIN_SESSION_SECRET")
     if not password or not secret_key or len(secret_key) < 32:
@@ -66,9 +73,6 @@ def register_admin_routes(app, database_path, send_fn=None, coordinator=None,
         raise ValueError("send_fn must be callable.")
     if reset_fn is None:
         reset_fn = lambda session_id: reset_history(database_path, session_id)
-    if system_instruction is None:
-        system_instruction = load_system_instruction()
-
     app.secret_key = secret_key
     app.config.update(SESSION_COOKIE_HTTPONLY=True,
                       SESSION_COOKIE_SECURE=bool(os.getenv("PORT")),
@@ -183,7 +187,7 @@ def register_admin_routes(app, database_path, send_fn=None, coordinator=None,
         if data is None:
             return jsonify(error="Session not found."), 404
         data["context_tokens"] = (
-            data.pop("context_characters") + len(system_instruction)
+            data.pop("context_characters") + len(load_system_instruction())
         ) // CHARACTERS_PER_TOKEN
         return jsonify(session_id=session_id, **data)
 
@@ -289,6 +293,40 @@ def register_admin_routes(app, database_path, send_fn=None, coordinator=None,
         except ConfigError as error:
             return jsonify(error=str(error)), 400
         return jsonify(config=config, status="saved")
+
+    @admin.get("/api/prompts")
+    def prompts_api():
+        return jsonify(prompts=list_editable_prompts())
+
+    @admin.get("/api/prompts/<prompt_id>")
+    def prompt_api(prompt_id):
+        try:
+            return jsonify(prompt=read_editable_prompt(prompt_id))
+        except PromptNotFoundError as error:
+            return jsonify(error=str(error)), 404
+        except PromptError as error:
+            logger.error("Could not read admin prompt | prompt=%s error=%s", prompt_id, error)
+            return jsonify(error=str(error)), 500
+
+    @admin.put("/api/prompts/<prompt_id>")
+    def save_prompt_api(prompt_id):
+        payload = request.get_json(silent=True)
+        content = payload.get("content") if isinstance(payload, dict) else None
+        try:
+            prompt = save_editable_prompt(prompt_id, content)
+        except PromptNotFoundError as error:
+            return jsonify(error=str(error)), 404
+        except PromptValidationError as error:
+            return jsonify(error=str(error)), 400
+        except PromptError as error:
+            logger.exception("Could not save admin prompt | prompt=%s", prompt_id)
+            return jsonify(error=str(error)), 500
+        logger.info(
+            "Admin prompt saved | prompt=%s characters=%d",
+            prompt_id,
+            len(prompt["content"]),
+        )
+        return jsonify(prompt=prompt, status="saved")
 
     @admin.errorhandler(AdminDashboardError)
     def bad_input(error):

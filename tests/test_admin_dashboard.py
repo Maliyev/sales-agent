@@ -79,6 +79,12 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(overview["openrouter"]["total"], 9500)
         self.assertEqual(overview["openrouter"]["cost_usd"], 0.0025)
         self.assertEqual(overview["openrouter"]["priced_calls"], 1)
+        for hours, count in ((24, 25), (168, 8), (720, 31)):
+            period = dashboard_overview(self.database_path, hours)
+            self.assertEqual(len(period["series"]), count)
+            self.assertEqual(sum(row["customer_messages"] for row in period["series"]), 1)
+            self.assertEqual(sum(row["llm_api_calls"] for row in period["series"]), 2)
+            self.assertEqual(sum(row["input"] for row in period["series"]), 17000)
 
     def test_report_api_usage_counts_without_appearing_as_customer_chat(self):
         create_session(self.database_path, "admin:report")

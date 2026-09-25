@@ -1,10 +1,17 @@
 const $ = id => document.getElementById(id);
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const state = {view: "overview", period: "24h", sessions: [], selected: null,
-  archived: false, messageSignature: "", logOffset: 0, logLines: [], logPaused: false, config: null};
+  archived: false, messageSignature: "", logOffset: 0, logLines: [], logPaused: false, config: null,
+  promptId: null, promptSavedContent: ""};
 const number = value => new Intl.NumberFormat("ru-RU").format(value || 0);
 const time = value => value ? new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z").toLocaleString("ru-RU") : "—";
 const node = (tag, cls, text) => { const item = document.createElement(tag); if (cls) item.className = cls; if (text != null) item.textContent = text; return item; };
+
+function promptHasUnsavedChanges() {
+  const editor = $("promptContent");
+  return state.view === "prompts" && state.promptId && editor && !editor.disabled &&
+    editor.value !== state.promptSavedContent;
+}
 
 let noticeTimer;
 function notice(message, error = false) {
@@ -22,6 +29,7 @@ async function api(path, options = {}) {
   return data;
 }
 function show(view) {
+  if (promptHasUnsavedChanges() && !confirm("Есть несохранённые изменения промпта. Перейти без сохранения?")) return;
   state.view = view;
   document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === view));
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view));
@@ -31,61 +39,210 @@ function show(view) {
   if (view === "logs") loadLogs();
   if (view === "sessions") { loadSessions(); loadBlocked(); }
   if (view === "settings") loadSettings();
+  if (view === "prompts") loadPrompts();
 }
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => show(button.dataset.view)));
+
+function updatePromptLength() {
+  const length = $("promptContent").value.length;
+  $("promptLength").textContent = `${number(length)} символов`;
+}
+
+async function loadPrompt(promptId) {
+  const select = $("promptSelect"), editor = $("promptContent"), button = $("savePromptButton");
+  editor.disabled = true; button.disabled = true; $("promptStatus").textContent = "Загружаю промпт…";
+  try {
+    const data = await api(`/prompts/${encodeURIComponent(promptId)}`);
+    state.promptId = data.prompt.id;
+    state.promptSavedContent = data.prompt.content;
+    select.value = data.prompt.id;
+    editor.value = data.prompt.content;
+    editor.disabled = false; button.disabled = true;
+    $("promptFile").textContent = data.prompt.path;
+    $("promptStatus").textContent = "Загружен · пока без изменений";
+    updatePromptLength();
+  } catch (error) {
+    state.promptId = null; state.promptSavedContent = "";
+    $("promptFile").textContent = ""; $("promptStatus").textContent = error.message;
+    notice(error.message, true);
+  }
+}
+
+async function loadPrompts() {
+  const select = $("promptSelect");
+  select.disabled = true; $("promptStatus").textContent = "Загружаю список…";
+  try {
+    const data = await api("/prompts");
+    select.replaceChildren(...data.prompts.map(prompt => {
+      const option = node("option", "", prompt.title); option.value = prompt.id; return option;
+    }));
+    select.disabled = false;
+    await loadPrompt(data.prompts[0].id);
+  } catch (error) {
+    $("promptStatus").textContent = error.message; notice(error.message, true);
+  }
+}
+
+$("promptSelect").addEventListener("change", async event => {
+  const nextPrompt = event.currentTarget.value;
+  if (promptHasUnsavedChanges() && !confirm("Есть несохранённые изменения. Загрузить другой промпт без сохранения?")) {
+    event.currentTarget.value = state.promptId;
+    return;
+  }
+  await loadPrompt(nextPrompt);
+});
+
+$("promptContent").addEventListener("input", () => {
+  updatePromptLength();
+  const dirty = promptHasUnsavedChanges();
+  $("promptStatus").textContent = dirty ? "Есть несохранённые изменения" : "Изменений нет";
+  $("savePromptButton").disabled = !dirty;
+});
+
+$("promptForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!state.promptId || !promptHasUnsavedChanges()) return;
+  const button = $("savePromptButton"), label = button.textContent;
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Сохраняю…"; button.setAttribute("aria-busy", "true");
+  $("promptStatus").textContent = "Записываю файл и применяю к новым обращениям…";
+  try {
+    const data = await api(`/prompts/${encodeURIComponent(state.promptId)}`, {
+      method: "PUT", body: JSON.stringify({content: $("promptContent").value})
+    });
+    state.promptSavedContent = data.prompt.content;
+    $("promptContent").value = data.prompt.content;
+    $("promptFile").textContent = data.prompt.path;
+    $("promptStatus").textContent = "Сохранено · новые обращения используют этот текст";
+    updatePromptLength(); notice("Промпт сохранён и применён к новым обращениям");
+  } catch (error) {
+    $("promptStatus").textContent = error.message; notice(error.message, true);
+  } finally {
+    button.disabled = !promptHasUnsavedChanges(); button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy");
+  }
+});
+
+const themeToggle = $("themeToggle");
+const themeLabel = $("themeLabel");
+function applyTheme(dark, save = false) {
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  themeToggle.checked = dark;
+  themeLabel.textContent = dark ? "Светлая тема" : "Тёмная тема";
+  themeToggle.setAttribute("aria-label", `Включить ${dark ? "светлую" : "тёмную"} тему`);
+  if (save) {
+    try { localStorage.setItem("elen-admin-theme", dark ? "dark" : "light"); }
+    catch (_) { /* The selected theme still applies for this page view. */ }
+  }
+}
+applyTheme(document.documentElement.dataset.theme === "dark");
+themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked, true));
 
 function stat(label, value, hint) {
   const card = node("div", "stat"); card.append(node("span", "label", label), node("strong", "", typeof value === "string" ? value : number(value)));
   if (hint) card.append(node("span", "hint", hint));
   return card;
 }
+function tokenSummary(t) {
+  const input = Number(t.input) || 0, output = Number(t.output) || 0;
+  const total = input + output, inputShare = total ? input / total * 100 : 0;
+  const feature = node("article", "metric-total");
+  const heading = node("div", "metric-total-heading");
+  heading.append(node("span", "label", "Total tokens"), node("span", "metric-period", "за выбранный период"));
+  feature.append(heading, node("strong", "metric-total-value", number(total)));
+  const bar = node("div", "token-split");
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", `Input ${number(input)}, Output ${number(output)}, Total ${number(total)}`);
+  const inputPart = node("span", "token-split-input"), outputPart = node("span", "token-split-output");
+  inputPart.style.width = `${inputShare}%`; outputPart.style.width = `${total ? 100 - inputShare : 0}%`;
+  bar.append(inputPart, outputPart); feature.append(bar);
+  const breakdown = node("div", "token-breakdown");
+  [["Input tokens", input, "input"], ["Output tokens", output, "output"]].forEach(([label, value, kind]) => {
+    const item = node("div", `token-part ${kind}`);
+    item.append(node("span", "", label), node("strong", "", number(value)));
+    breakdown.append(item);
+  });
+  feature.append(breakdown);
+  return feature;
+}
 function drawChart(id, rows, fields) {
   const target = $(id); target.replaceChildren();
   if (!rows.length) { target.append(node("span", "", "Пока нет данных за этот период")); return; }
-  const width = 600, height = 200, pad = 28;
-  const max = Math.max(1, ...rows.flatMap(row => fields.map(field => row[field.key] || 0)));
+  const width = 500, height = 210, left = 43, right = 6, top = 8, bottom = 181;
+  const slot = (width - left - right) / rows.length;
+  const largest = Math.max(0, ...rows.flatMap(row => fields.map(field => row[field.key] || 0)));
+  const roughStep = Math.max(1, largest / 4);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const tickStep = [1, 2, 5, 10].map(value => value * magnitude).find(value => value >= roughStep);
+  const scaleMax = Math.max(tickStep, Math.ceil(largest / tickStep) * tickStep);
+  const tickEvery = rows.length <= 10 ? 1 : rows.length <= 26 ? 3 : 5;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`); svg.setAttribute("role", "img");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", fields.map(field => field.name).join(", "));
-  for (let step = 0; step <= 4; step++) {
-    const y = pad + step * (height - 2 * pad) / 4;
-    const line = document.createElementNS(svg.namespaceURI, "line");
-    line.setAttribute("x1", pad); line.setAttribute("x2", width - 5); line.setAttribute("y1", y); line.setAttribute("y2", y);
-    line.setAttribute("stroke", "#293849"); line.setAttribute("stroke-width", "1"); svg.append(line);
-    const label = document.createElementNS(svg.namespaceURI, "text");
-    label.setAttribute("x", 0); label.setAttribute("y", y + 3); label.setAttribute("fill", "#8194a8"); label.setAttribute("font-size", "9");
-    label.textContent = Math.round(max * (4 - step) / 4).toLocaleString("ru-RU"); svg.append(label);
+  const svgNode = (tag, attributes, content) => {
+    const item = document.createElementNS(svg.namespaceURI, tag);
+    Object.entries(attributes).forEach(([key, value]) => item.setAttribute(key, value));
+    if (content != null) item.textContent = content;
+    return item;
+  };
+  for (let value = 0; value <= scaleMax; value += tickStep) {
+    const y = bottom - value / scaleMax * (bottom - top);
+    svg.append(svgNode("line", {class: "grid-y", x1: left, x2: width - right, y1: y, y2: y}));
+    svg.append(svgNode("text", {x: left - 7, y: y + 3, "text-anchor": "end"}, number(value)));
   }
-  fields.forEach(field => {
-    const path = document.createElementNS(svg.namespaceURI, "polyline");
-    path.setAttribute("points", rows.map((row, index) => {
-      const x = pad + index * (width - pad - 6) / Math.max(1, rows.length - 1);
-      const y = height - pad - (row[field.key] || 0) * (height - 2 * pad) / max;
-      return `${x},${y}`;
-    }).join(" "));
-    path.setAttribute("fill", "none"); path.setAttribute("stroke", field.color);
-    path.setAttribute("stroke-width", "2.5"); path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round");
-    svg.append(path);
+  for (let index = 0; index <= rows.length; index++) {
+    const x = left + index * slot;
+    svg.append(svgNode("line", {class: "grid-x", x1: x, x2: x, y1: top, y2: bottom}));
+  }
+  const detail = node("div", "chart-detail");
+  const showPoint = (row, index) => {
+    const date = row.period.slice(8, 10) + "." + row.period.slice(5, 7);
+    const when = row.period.length > 10 ? `${date} · ${row.period.slice(11)}` : date;
+    const partial = index === 0 || index === rows.length - 1 ? " · часть периода" : "";
+    detail.textContent = `${when}${partial} · ${fields.map(field => `${field.name}: ${number(row[field.key])}`).join(" · ")}`;
+  };
+  rows.forEach((row, index) => {
+    const x = left + index * slot;
+    const group = svgNode("g", {class: "chart-bucket", tabindex: "0"});
+    group.append(svgNode("rect", {class: "chart-hit", x, y: top, width: slot, height: bottom - top}));
+    const barWidth = Math.min(rows.length <= 10 ? 18 : 11, slot * 0.31);
+    fields.forEach((field, fieldIndex) => {
+      const value = row[field.key] || 0;
+      const barHeight = value / scaleMax * (bottom - top);
+      group.append(svgNode("rect", {class: "chart-bar", x: x + slot / 2 + (fieldIndex - (fields.length - 1) / 2) * (barWidth + 2) - barWidth / 2,
+        y: bottom - barHeight, width: barWidth, height: barHeight, fill: field.color}));
+    });
+    const label = `${row.period}: ${fields.map(field => `${field.name} ${number(row[field.key])}`).join(", ")}`;
+    group.setAttribute("aria-label", label);
+    group.append(svgNode("title", {}, label));
+    group.addEventListener("pointerenter", () => showPoint(row, index));
+    group.addEventListener("focus", () => showPoint(row, index));
+    svg.append(group);
+    if (index % tickEvery === 0 || index === rows.length - 1) {
+      const stamp = row.period.length > 10 ? row.period.slice(11) : row.period.slice(8, 10) + "." + row.period.slice(5, 7);
+      svg.append(svgNode("text", {x: x + slot / 2, y: 201, "text-anchor": "middle"}, stamp));
+    }
   });
-  const first = node("small", "", rows[0].period), last = node("small", "", rows.at(-1).period);
-  const labels = node("div", "chart-labels"); labels.style.cssText = "display:flex;justify-content:space-between;width:100%;color:#8194a8;font-size:10px";
-  labels.append(first, last); target.style.display = "block"; target.append(svg, labels);
+  showPoint(rows.at(-1), rows.length - 1);
+  target.append(svg, detail);
 }
 async function loadOverview() {
   if (state.view !== "overview") return;
+  const period = state.period;
   try {
-    const data = await api(`/overview?period=${state.period}`);
+    const data = await api(`/overview?period=${period}`);
+    if (state.view !== "overview" || state.period !== period) return;
     const t = data.totals, o = data.openrouter;
-    const main = $("mainStats"); main.replaceChildren(
-      stat("Input tokens", t.input), stat("Output tokens", t.output), stat("Total tokens", t.total),
+    const support = node("div", "metric-support-grid");
+    support.append(
       stat("Customer messages", t.customer_messages), stat("Agent turns", t.agent_turns),
       stat("LLM API calls", t.llm_api_calls), stat("OpenRouter API calls", t.openrouter_api_calls));
+    const main = $("mainStats"); main.replaceChildren(tokenSummary(t), support);
     const cost = o.priced_calls ? `$${Number(o.cost_usd).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:8})}` : "—";
     $("openrouterStats").replaceChildren(
       stat("Input", o.input), stat("Output", o.output), stat("Total", o.total),
       stat("Расход, USD", cost, `Цена известна для ${o.priced_calls} из ${o.calls} вызовов`));
-    drawChart("tokenChart", data.series, [{key:"input",name:"Input tokens",color:"#5ad7c1"},{key:"output",name:"Output tokens",color:"#729aff"}]);
-    drawChart("activityChart", data.series, [{key:"customer_messages",name:"Customer messages",color:"#5ad7c1"},{key:"agent_turns",name:"Agent turns",color:"#729aff"},{key:"llm_api_calls",name:"LLM API calls",color:"#eebd72"}]);
+    drawChart("tokenChart", data.series, [{key:"input",name:"Вход",color:"#087f72"},{key:"output",name:"Выход",color:"#5879ef"}]);
+    drawChart("activityChart", data.series, [{key:"customer_messages",name:"Сообщения",color:"#0a9380"},{key:"llm_api_calls",name:"Вызовы API",color:"#d9952d"}]);
     const top = $("topSessions"); top.replaceChildren();
     if (!data.top_sessions.length) top.append(node("tr", "", ""));
     data.top_sessions.forEach(row => {
@@ -107,7 +264,9 @@ $("reportForm").addEventListener("submit", async event => {
   const days = Number($("reportDays").value);
   if (!Number.isInteger(days) || days < 1 || days > 30) return;
   const button = $("reportButton"), status = $("reportStatus");
-  button.disabled = true; status.textContent = "Анализируем журнал…";
+  const label = button.textContent;
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Готовлю отчёт…";
+  button.setAttribute("aria-busy", "true"); status.textContent = "Анализируем журнал…";
   try {
     const result = await api("/report", {method: "POST", body: JSON.stringify({days})});
     const period = `${bakuTime(result.start)} — ${bakuTime(result.end)}`;
@@ -117,7 +276,7 @@ $("reportForm").addEventListener("submit", async event => {
     $("reportResult").hidden = false;
     status.textContent = result.model_called ? "Готово" : "Нет данных за период";
   } catch (error) { status.textContent = error.message; notice(error.message, true); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy"); }
 });
 
 async function loadSessions() {
@@ -174,10 +333,13 @@ $("chatSearch").addEventListener("input", renderSessionList); $("chatFilter").ad
 $("showArchived").addEventListener("change", event => { state.archived = event.target.checked; state.messageSignature = ""; loadMessages(true); });
 $("chatComposer").addEventListener("submit", async event => {
   event.preventDefault(); const text = $("chatInput").value.trim(); if (!state.selected || !text) return;
-  $("chatSend").disabled = true;
+  const button = $("chatSend"), label = button.textContent;
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Отправляю…"; button.setAttribute("aria-busy", "true");
   try { await api(`/sessions/${encodeURIComponent(state.selected)}/messages`, {method:"POST", body:JSON.stringify({text})});
     $("chatInput").value = ""; notice("Сообщение отправлено"); await loadMessages(true); await loadSessions();
-  } catch (error) { notice(error.message, true); } finally { $("chatSend").disabled = false; }
+  } catch (error) { notice(error.message, true); } finally {
+    button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy");
+  }
 });
 $("chatInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("chatComposer").requestSubmit(); } });
 $("resetSession").addEventListener("click", async () => {
@@ -275,6 +437,7 @@ async function loadSettings() {
 }
 $("settingsForm").addEventListener("submit", async event => {
   event.preventDefault(); if (!state.config) return;
+  const button = event.currentTarget.querySelector("button[type=submit]"), label = button.textContent;
   const config = structuredClone(state.config);
   document.querySelectorAll("[data-path]").forEach(input => {
     const path = input.dataset.path.split("."); let parent = config;
@@ -288,12 +451,14 @@ $("settingsForm").addEventListener("submit", async event => {
     parent[path.at(-1)] = value;
   });
   const status = $("settingsState"); status.textContent = "Сохранение…";
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Сохраняю…"; button.setAttribute("aria-busy", "true");
   try { const data = await api("/settings", {method:"PUT", body:JSON.stringify({config})});
     state.config = data.config; renderSettings(); status.textContent = "Сохранено · новые запросы используют эти настройки"; notice("Настройки сохранены");
   } catch (error) { status.textContent = error.message; notice(error.message, true); }
+  finally { button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy"); }
 });
 
-show(["overview","chats","logs","sessions","settings"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview");
+show(["overview","chats","logs","sessions","settings","prompts"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview");
 setInterval(() => { if (state.view === "overview") loadOverview(); }, 30000);
 setInterval(() => { if (state.view === "chats" || state.view === "sessions") loadSessions(); }, 8000);
 setInterval(() => { if (state.view === "chats") loadMessages(); }, 2000);

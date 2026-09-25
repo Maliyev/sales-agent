@@ -15,7 +15,7 @@ from database import (
     update_messages_status,
 )
 from message_service import generate_customer_reply
-from prompts import load_prompt_file, load_system_instruction
+from prompts import load_agent_instructions
 from session_coordinator import SessionCoordinator
 from telegram_bot import build_telegram_channel
 from whatsapp_bot import build_whatsapp_channel
@@ -59,14 +59,16 @@ def main():
         api_key, model, telegram_token = get_common_settings()
         whatsapp_settings = get_whatsapp_settings()
         initialize_database(DATABASE_PATH)
-        system_instruction = load_system_instruction()
-        selection_instruction = load_prompt_file("prompts/product_selection.md")
-        response_instruction = load_prompt_file("prompts/product_response.md")
+        system_instruction, selection_instruction, response_instruction = (
+            load_agent_instructions()
+        )
     except (DatabaseError, RuntimeError) as error:
         logger.exception("❌ Runner startup failed | error=%s", error)
         return
 
     def create_reply(session_id, user_text, in_reply_to_message_id):
+        current_instructions = load_agent_instructions()
+
         def notify_list_processing():
             if session_id.startswith("telegram:"):
                 telegram_channel.notify_list_processing(session_id)
@@ -79,9 +81,7 @@ def main():
             user_text,
             get_gemini_model(),
             api_key,
-            system_instruction,
-            selection_instruction,
-            response_instruction,
+            *current_instructions,
             in_reply_to_message_id=in_reply_to_message_id,
             list_start_notify_fn=notify_list_processing,
         )
@@ -142,7 +142,6 @@ def main():
         DATABASE_PATH,
         coordinator=coordinator,
         reset_fn=lambda session_id: reset_history(DATABASE_PATH, session_id),
-        system_instruction=system_instruction,
     )
 
     telegram_channel.start()
