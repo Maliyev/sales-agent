@@ -462,6 +462,10 @@ The dashboard replaces the file atomically when saving it.
 Changing the local file does not change the copy in a running Railway container.
 Dashboard edits write to the running service's file. They take effect on new
 work, but a Railway redeploy replaces them with the repository version.
+The Prompts editor applies updated Markdown files to new agent turns without a
+restart. If `RAILWAY_VOLUME_MOUNT_PATH` is available, prompt overrides are
+written under `prompt-overrides/` on that volume and survive redeploys; without
+a volume, edits in the running container are temporary.
 
 A missing `config.json` uses safe defaults. Token usage comes from
 the provider response (`usageMetadata` for Gemini). The pre-request estimate
@@ -482,6 +486,8 @@ The runner serves `/admin` on the same Flask server and port as
 the UI and API. Overview reads usage and activity from SQLite; Chats supports
 manual replies and context reset; Logs reads `conversations.log`; Sessions
 manages blocked sessions; Settings validates and atomically edits `config.json`.
+Prompts edits the allowlisted files in `prompts/` and `knowledge/store.md`,
+atomically saves each edit, and applies it to new agent turns immediately.
 The admin session cookie is HttpOnly and SameSite; on Railway it is also Secure.
 Agent turns are recorded separately from customer messages and API calls.
 

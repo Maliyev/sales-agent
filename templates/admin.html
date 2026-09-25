@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 5h12M8 12h12M8 19h12"/><circle cx="4" cy="5" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="19" r=".7" fill="currentColor"/></svg><span>Logs</span></button>
         <button class="nav-item" data-view="sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 20 8v8l-8 4.5L4 16V8l8-4.5Z"/><path d="m4.5 8.2 7.5 4.3 7.5-4.3M12 12.5v7.7"/></svg><span>Sessions</span></button>
         <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1a1.8 1.8 0 0 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .9v.2a1.8 1.8 0 0 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.9l-.1.1a1.8 1.8 0 0 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.9-3h-.2a1.8 1.8 0 0 1 0-3.6h.2a1.8 1.8 0 0 0 .9-3l-.1-.1a1.8 1.8 0 0 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3-.9v-.2a1.8 1.8 0 0 1 3.6 0v.2a1.8 1.8 0 0 0 3 .9l.1-.1a1.8 1.8 0 0 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .9 3h.2a1.8 1.8 0 0 1 0 3.6h-.2a1.8 1.8 0 0 0-.9 3Z" transform="translate(0.9 0.9) scale(.925)"/></svg><span>Settings</span></button>
+        <button class="nav-item" data-view="prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.75h8l4.25 4.5v12H6z"/><path d="M14 3.75v4.5h4.25M9 12h6M9 15.5h6"/></svg><span>Prompts</span></button>
       </nav>
       <label class="theme-switch-row">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 15.1A8.5 8.5 0 0 1 8.9 3.8 8.6 8.6 0 1 0 20.2 15.1Z"/><path d="M16.5 3v3M15 4.5h3"/></svg>
@@ -46,7 +47,7 @@
         <div class="stat-grid" id="openrouterStats"></div>
         <div class="chart-grid">
           <article class="panel"><div class="panel-head"><h2>Токены во времени</h2><span>Вход / выход</span></div><div class="chart-legend"><i class="dot teal"></i> Вход <i class="dot blue"></i> Выход</div><div id="tokenChart" class="chart"></div></article>
-          <article class="panel"><div class="panel-head"><h2>Активность во времени</h2><span>Сообщения / turns / API</span></div><div class="chart-legend"><i class="dot teal"></i> Клиенты <i class="dot blue"></i> Agent turns <i class="dot gold"></i> API</div><div id="activityChart" class="chart"></div></article>
+          <article class="panel"><div class="panel-head"><h2>Активность во времени</h2><span>Сообщения / вызовы API</span></div><div class="chart-legend"><i class="dot teal"></i> Сообщения <i class="dot gold"></i> Вызовы API</div><div id="activityChart" class="chart"></div></article>
         </div>
         <article class="panel report-panel">
           <div class="panel-head"><h2>Отчёт по разговорам</h2><span>conversations.log · OpenRouter / GLM 5.3 Flash · low</span></div>
@@ -81,6 +82,14 @@
       <section id="sessions" class="view"><header class="page-head"><div><small class="eyebrow">ACCESS CONTROL</small><h1>Sessions</h1><p>Блокировка и разблокировка сессий</p></div></header>
         <div class="panel"><h2>Заблокировать сессию</h2><form id="blockForm" class="block-form"><input id="blockSearch" list="knownSessions" placeholder="whatsapp:... или telegram:..." required><datalist id="knownSessions"></datalist><input id="blockReason" placeholder="Причина блокировки" maxlength="200" required><button class="danger" type="submit">Заблокировать</button></form></div>
         <div class="panel"><h2>Заблокированные сессии</h2><div class="table-scroll"><table><thead><tr><th>Сессия</th><th>Причина</th><th>Время</th><th></th></tr></thead><tbody id="blockedSessions"></tbody></table></div></div>
+      </section>
+
+      <section id="prompts" class="view"><header class="page-head"><div><small class="eyebrow">AGENT INSTRUCTIONS</small><h1>Prompts</h1><p>Новые обращения используют сохранённый текст сразу, без перезапуска. На Railway изменения сохраняются между деплоями только при подключённом Volume.</p></div></header>
+        <form id="promptForm" class="panel prompt-editor">
+          <div class="prompt-editor-head"><label for="promptSelect">Выберите промпт</label><select id="promptSelect" required disabled><option value="">Загрузка списка…</option></select><span id="promptFile" class="muted"></span></div>
+          <label class="sr-only" for="promptContent">Текст промпта</label><textarea id="promptContent" class="prompt-editor-text" spellcheck="false" placeholder="Выберите промпт из списка" disabled></textarea>
+          <div class="prompt-editor-foot"><span id="promptStatus" role="status">Изменения ещё не сохранены</span><span id="promptLength" class="muted">0 символов</span><button id="savePromptButton" class="primary" type="submit" disabled>Сохранить и применить</button></div>
+        </form>
       </section>
 
       <section id="settings" class="view"><header class="page-head"><div><small class="eyebrow">RUNTIME CONFIG</small><h1>Settings</h1><p>Сохранённые значения применяются к новым запросам без перезапуска</p></div></header>
