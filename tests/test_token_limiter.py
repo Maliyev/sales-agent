@@ -112,6 +112,26 @@ class WaitForTokenBudgetTests(unittest.TestCase):
 
         self.assertEqual(self.sleeps, [])
 
+    def test_paid_usage_does_not_consume_the_gemini_tpm_budget(self):
+        record_api_call(
+            self.database_path,
+            "telegram:1",
+            None,
+            "final",
+            "openrouter:openai/gpt-6-luna",
+            prompt_tokens=900,
+        )
+
+        wait_for_token_budget(
+            self.database_path,
+            500,
+            tpm_limit=1000,
+            clock=self.clock.time,
+            sleep_fn=self.sleep_fn,
+        )
+
+        self.assertEqual(self.sleeps, [])
+
     def test_waits_until_the_window_frees_up(self):
         record_api_call(
             self.database_path,

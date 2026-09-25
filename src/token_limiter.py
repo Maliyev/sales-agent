@@ -59,6 +59,7 @@ def wait_for_token_budget(
             database_path,
             TPM_WINDOW_SECONDS,
             now=clock(),
+            exclude_model_prefix="openrouter:",
         )
         if used + estimated_tokens <= tpm_limit:
             return

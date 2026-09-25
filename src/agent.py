@@ -178,6 +178,8 @@ def get_agent_reply(
     database_path=None,
     in_reply_to_message_id=None,
     list_start_notify_fn=None,
+    tpm_limit=None,
+    record_model_prefix="",
 ):
     if final_system_instruction is None:
         final_system_instruction = load_final_system_instruction()
@@ -189,6 +191,8 @@ def get_agent_reply(
         in_reply_to_message_id,
         session_id,
         "decision",
+        tpm_limit,
+        record_model_prefix,
     )
     call_selection = _build_model_call(
         generate_fn,
@@ -197,6 +201,8 @@ def get_agent_reply(
         in_reply_to_message_id,
         session_id,
         "selection",
+        tpm_limit,
+        record_model_prefix,
     )
     call_final = _build_model_call(
         generate_fn,
@@ -205,6 +211,8 @@ def get_agent_reply(
         in_reply_to_message_id,
         session_id,
         "final",
+        tpm_limit,
+        record_model_prefix,
     )
     budget = {"used": 0, "limit": get_max_api_calls_per_reply()}
     list_addenda = load_list_mode_addenda()
@@ -532,13 +540,15 @@ def _build_model_call(
     in_reply_to_message_id,
     session_id,
     purpose,
+    tpm_limit,
+    record_model_prefix,
 ):
     if database_path is None:
         return generate_fn
 
     def call_model(history, model_name, api_key, system_instruction, **kwargs):
         estimated_tokens = _estimate_tokens(history, system_instruction)
-        wait_for_token_budget(database_path, estimated_tokens)
+        wait_for_token_budget(database_path, estimated_tokens, tpm_limit=tpm_limit)
 
         started_at = time.monotonic()
         try:
@@ -556,7 +566,7 @@ def _build_model_call(
                 session_id,
                 in_reply_to_message_id,
                 purpose,
-                model_name,
+                f"{record_model_prefix}{model_name}",
                 duration_ms,
                 "failed",
                 _describe_error(error),
@@ -570,7 +580,7 @@ def _build_model_call(
             session_id,
             in_reply_to_message_id,
             purpose,
-            model_name,
+            f"{record_model_prefix}{model_name}",
             duration_ms,
             "ok",
             None,

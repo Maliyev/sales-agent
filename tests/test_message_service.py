@@ -5,13 +5,118 @@ from unittest.mock import Mock, patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from message_service import generate_customer_reply, reply_to_customer
+from message_service import (
+    generate_customer_reply,
+    generate_gemini_content,
+    generate_openrouter_content,
+    reply_to_customer,
+)
 from agent_reply import AgentReply
 from compaction import CompactionError
 from token_limiter import SessionContextTooLargeError
 
 
 class MessageServiceTests(unittest.TestCase):
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Reply"))
+    @patch("message_service.os.getenv", return_value="paid-key")
+    @patch(
+        "message_service.get_openrouter_settings",
+        return_value={
+            "enabled": True,
+            "model": "z-ai/glm-5.3-flash",
+            "reasoning_effort": "high",
+            "allowed_numbers": ["+994703557772", "+994556264626"],
+        },
+    )
+    def test_only_exact_whatsapp_numbers_use_openrouter(
+        self, settings, getenv, get_agent_reply, load_history
+    ):
+        for session_id in ("whatsapp:994703557772", "whatsapp:994556264626"):
+            generate_customer_reply(
+                "database.db", session_id, "Hi", "gemini-model", "gemini-key",
+                "system", "selection", "response",
+            )
+            args = get_agent_reply.call_args.args
+            kwargs = get_agent_reply.call_args.kwargs
+            self.assertEqual(args[2:4], ("z-ai/glm-5.3-flash", "paid-key"))
+            self.assertIs(kwargs["generate_fn"].func, generate_openrouter_content)
+            self.assertEqual(
+                kwargs["generate_fn"].keywords["reasoning_effort"], "high"
+            )
+            self.assertEqual(kwargs["tpm_limit"], 0)
+            self.assertEqual(kwargs["record_model_prefix"], "openrouter:")
+        self.assertEqual(getenv.call_count, 2)
+
+        for session_id in (
+            "telegram:994703557772",
+            "whatsapp:9947035577720",
+            "whatsapp:1994703557772",
+            "whatsapp:994703557772:other",
+            "whatsapp:994000000000",
+        ):
+            generate_customer_reply(
+                "database.db", session_id, "Hi", "gemini-model", "gemini-key",
+                "system", "selection", "response",
+            )
+            args = get_agent_reply.call_args.args
+            self.assertEqual(args[2:4], ("gemini-model", "gemini-key"))
+            self.assertIs(
+                get_agent_reply.call_args.kwargs["generate_fn"],
+                generate_gemini_content,
+            )
+        self.assertEqual(getenv.call_count, 2)
+
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Reply"))
+    @patch("message_service.os.getenv", return_value=None)
+    @patch(
+        "message_service.get_openrouter_settings",
+        return_value={
+            "enabled": True,
+            "model": "openai/gpt-6-luna",
+            "allowed_numbers": ["+994703557772"],
+        },
+    )
+    def test_missing_paid_key_fails_only_the_allowed_session(
+        self, settings, getenv, get_agent_reply, load_history
+    ):
+        with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY"):
+            generate_customer_reply(
+                "database.db", "whatsapp:994703557772", "Hi",
+                "gemini-model", "gemini-key", "system", "selection", "response",
+            )
+        get_agent_reply.assert_not_called()
+        generate_customer_reply(
+            "database.db", "whatsapp:994000000000", "Hi",
+            "gemini-model", "gemini-key", "system", "selection", "response",
+        )
+        self.assertEqual(getenv.call_count, 1)
+
+    @patch("message_service.load_history", return_value=[])
+    @patch("message_service.get_agent_reply", return_value=AgentReply("Reply"))
+    @patch("message_service.os.getenv")
+    @patch(
+        "message_service.get_openrouter_settings",
+        return_value={
+            "enabled": False,
+            "model": "openai/gpt-6-luna",
+            "allowed_numbers": ["+994703557772"],
+        },
+    )
+    def test_disabled_paid_route_uses_gemini_even_for_allowed_number(
+        self, settings, getenv, get_agent_reply, load_history
+    ):
+        generate_customer_reply(
+            "database.db", "whatsapp:994703557772", "Hi",
+            "gemini-model", "gemini-key", "system", "selection", "response",
+        )
+        self.assertEqual(
+            get_agent_reply.call_args.args[2:4],
+            ("gemini-model", "gemini-key"),
+        )
+        getenv.assert_not_called()
+
     @patch("message_service.save_model_message")
     @patch("message_service.update_messages_status")
     @patch("message_service.insert_incoming_message", return_value=7)

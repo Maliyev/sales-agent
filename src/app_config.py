@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from app_logging import get_logger
@@ -9,6 +10,9 @@ logger = get_logger("config")
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 
 THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+OPENROUTER_REASONING_EFFORTS = frozenset(
+    {"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 DEFAULT_CONFIG = {
     "gemini": {
@@ -20,6 +24,12 @@ DEFAULT_CONFIG = {
             "delays": [15, 30, 60, 120, 240],
             "max_wait_seconds": 600,
         },
+    },
+    "openrouter": {
+        "enabled": False,
+        "model": "",
+        "reasoning_effort": "",
+        "allowed_numbers": [],
     },
     "limits": {
         "max_search_rounds": 3,
@@ -87,6 +97,10 @@ def set_config(config):
 
 def get_gemini_model():
     return get_config()["gemini"]["model"]
+
+
+def get_openrouter_settings():
+    return get_config().get("openrouter", DEFAULT_CONFIG["openrouter"])
 
 
 def get_vision_model():
@@ -171,6 +185,40 @@ def _merge_into(target, source):
 
 
 def _validate_config(config):
+    openrouter = config.get("openrouter")
+    if not isinstance(openrouter, dict):
+        raise ConfigError("openrouter must be an object.")
+    if not isinstance(openrouter.get("enabled"), bool):
+        raise ConfigError("openrouter.enabled must be a boolean.")
+    model = openrouter.get("model")
+    if not isinstance(model, str) or (openrouter["enabled"] and not model.strip()):
+        raise ConfigError("openrouter.model must be a string and non-empty when enabled.")
+    effort = openrouter.get("reasoning_effort")
+    if not isinstance(effort, str) or effort not in OPENROUTER_REASONING_EFFORTS:
+        raise ConfigError("openrouter.reasoning_effort has an invalid value.")
+    if openrouter["enabled"] and model == "openai/gpt-6-luna" and effort != "none":
+        raise ConfigError(
+            "openai/gpt-6-luna requires reasoning_effort 'none' for tools "
+            "with the Chat Completions API."
+        )
+    if openrouter["enabled"] and model == "z-ai/glm-5.3-flash" and effort not in {
+        "low", "high", "max"
+    }:
+        raise ConfigError(
+            "z-ai/glm-5.3-flash supports reasoning_effort low, high, or max."
+        )
+    allowed_numbers = openrouter.get("allowed_numbers")
+    if not isinstance(allowed_numbers, list) or any(
+        not isinstance(number, str)
+        or re.fullmatch(r"\+[1-9][0-9]{7,14}", number) is None
+        for number in allowed_numbers
+    ):
+        raise ConfigError("openrouter.allowed_numbers must contain E.164 phone numbers.")
+    if len(set(allowed_numbers)) != len(allowed_numbers):
+        raise ConfigError("openrouter.allowed_numbers must not contain duplicates.")
+    if openrouter["enabled"] and not allowed_numbers:
+        raise ConfigError("openrouter.allowed_numbers must not be empty when enabled.")
+
     model = config["gemini"].get("model")
     if not isinstance(model, str) or not model.strip():
         raise ConfigError("gemini.model must be a non-empty string.")

@@ -41,6 +41,9 @@ class LoadConfigTests(unittest.TestCase):
     def test_returns_defaults_when_the_file_is_missing(self):
         config = load_config(self.path)
 
+        self.assertIs(config["openrouter"]["enabled"], False)
+        self.assertEqual(config["openrouter"]["allowed_numbers"], [])
+
         self.assertEqual(config["limits"]["message_rate"]["max_messages"], 15)
         self.assertEqual(config["limits"]["message_rate"]["window_seconds"], 60)
         self.assertEqual(config["limits"]["max_search_rounds"], 3)
@@ -74,6 +77,76 @@ class LoadConfigTests(unittest.TestCase):
     def test_rejects_invalid_json(self):
         self.path.write_text("{not json", encoding="utf-8")
 
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_enabled_openrouter_without_model_or_numbers(self):
+        self.write_config({"openrouter": {"enabled": True}})
+        self.assertRaises(ConfigError, load_config, self.path)
+
+        self.write_config(
+            {"openrouter": {"enabled": True, "model": "openai/gpt-6-luna"}}
+        )
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_rejects_malformed_openrouter_numbers(self):
+        for number in ("994703557772", "+994 70 355 77 72", "+994703557772x"):
+            with self.subTest(number=number):
+                self.write_config({"openrouter": {"allowed_numbers": [number]}})
+                self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_accepts_exact_openrouter_numbers(self):
+        self.write_config(
+            {
+                "openrouter": {
+                    "enabled": True,
+                    "model": "openai/gpt-6-luna",
+                    "reasoning_effort": "none",
+                    "allowed_numbers": ["+994703557772", "+994556264626"],
+                }
+            }
+        )
+        self.assertIs(load_config(self.path)["openrouter"]["enabled"], True)
+
+    def test_rejects_luna_with_tools_and_nonzero_reasoning(self):
+        self.write_config(
+            {
+                "openrouter": {
+                    "enabled": True,
+                    "model": "openai/gpt-6-luna",
+                    "reasoning_effort": "high",
+                    "allowed_numbers": ["+994703557772"],
+                }
+            }
+        )
+        self.assertRaises(ConfigError, load_config, self.path)
+
+    def test_glm_accepts_only_its_supported_efforts(self):
+        for effort in ("low", "high", "max"):
+            with self.subTest(effort=effort):
+                self.write_config(
+                    {
+                        "openrouter": {
+                            "enabled": True,
+                            "model": "z-ai/glm-5.3-flash",
+                            "reasoning_effort": effort,
+                            "allowed_numbers": ["+994703557772"],
+                        }
+                    }
+                )
+                self.assertEqual(
+                    load_config(self.path)["openrouter"]["reasoning_effort"],
+                    effort,
+                )
+        self.write_config(
+            {
+                "openrouter": {
+                    "enabled": True,
+                    "model": "z-ai/glm-5.3-flash",
+                    "reasoning_effort": "medium",
+                    "allowed_numbers": ["+994703557772"],
+                }
+            }
+        )
         self.assertRaises(ConfigError, load_config, self.path)
 
     def test_rejects_a_non_object_config(self):
