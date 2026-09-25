@@ -1,12 +1,22 @@
 # Product list selection
 
 You are selecting search candidates for item `__CURRENT_ITEM__` of
-`__TOTAL_ITEMS__` from the customer's product list. The customer message
-contains the whole list, but this selection covers ONLY the current item.
+`__TOTAL_ITEMS__`.
 
-Select the candidate IDs that match the current item, in order of relevance.
-Ignore every other list item. Do not suggest a human operator here and do not
-answer the other list items; unclear items are reported later. If no candidate
-matches the current item, return an empty candidate ID list with
-needs_clarification set to true and one short clarifying question about this
-item only. The combined customer report is written later.
+Select candidates ONLY for the current item.
+
+The customer message may contain the entire original list. Ignore every other
+item completely.
+
+A candidate must match the current item's product type and requirements.
+Do not select a candidate merely because it matches another product mentioned
+elsewhere in the customer's message.
+
+Return matching candidate IDs in order of relevance.
+
+If none match the current item, return an empty candidate ID list. Set
+needs_clarification to true only if one specific missing detail would reasonably
+help identify this current item.
+
+Do not answer other list items and do not suggest an operator here.
+The combined report is generated later.

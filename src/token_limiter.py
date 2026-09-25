@@ -32,11 +32,13 @@ def wait_for_token_budget(
     clock=time.time,
     sleep_fn=time.sleep,
     max_wait_seconds=MAX_WAIT_SECONDS,
+    context_limit=None,
 ):
     if tpm_limit is None:
         tpm_limit = get_tpm_limit()
 
-    context_limit = get_context_token_limit()
+    if context_limit is None:
+        context_limit = get_context_token_limit()
     if context_limit > 0 and estimated_tokens > context_limit:
         raise SessionContextTooLargeError(
             f"Estimated request size {estimated_tokens} tokens exceeds "

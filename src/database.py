@@ -246,11 +246,43 @@ def migration_004_vision_api_calls(connection):
     )
 
 
+def migration_005_agent_turns(connection):
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_turns (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS agent_turns_by_time ON agent_turns(created_at)"
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_turns (session_id, created_at)
+        SELECT session_id, MIN(created_at)
+        FROM api_calls
+        WHERE in_reply_to_message_id IS NOT NULL AND purpose != 'vision'
+        GROUP BY session_id, in_reply_to_message_id
+        """
+    )
+
+
+def migration_006_api_call_cost(connection):
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(api_calls)")}
+    if "cost_usd" not in columns:
+        connection.execute("ALTER TABLE api_calls ADD COLUMN cost_usd REAL")
+
+
 MIGRATIONS = (
     migration_001_initial_schema,
     migration_002_api_calls,
     migration_003_compaction_api_calls,
     migration_004_vision_api_calls,
+    migration_005_agent_turns,
+    migration_006_api_call_cost,
 )
 
 
@@ -419,14 +451,26 @@ def list_sessions(database_path):
                       AND latest.role != 'tool'
                     ORDER BY latest.id DESC
                     LIMIT 1
-                ) AS last_text
+                ) AS last_text,
+                (
+                    SELECT latest.created_at
+                    FROM messages AS latest
+                    WHERE latest.session_id = sessions.session_id
+                      AND latest.role != 'tool'
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                ) AS last_at
             FROM sessions
             LEFT JOIN messages
                 ON messages.session_id = sessions.session_id
                 AND messages.archived = 0
                 AND messages.role != 'tool'
+            WHERE sessions.session_id != 'admin:report'
             GROUP BY sessions.session_id, sessions.created_at
-            ORDER BY COALESCE(MAX(messages.id), 0) DESC, sessions.created_at DESC
+            ORDER BY (
+                SELECT COALESCE(MAX(id), 0) FROM messages AS any_message
+                WHERE any_message.session_id = sessions.session_id
+            ) DESC, sessions.created_at DESC
             """
         ).fetchall()
         return [dict(row) for row in rows]
@@ -450,6 +494,165 @@ def load_session_messages(database_path, session_id):
         return [dict(row) for row in rows]
 
     return run_database_operation(database_path, read_messages)
+
+
+def admin_session_messages(database_path, session_id, include_archived=False):
+    session_id = validate_session_id(session_id)
+
+    def read_messages(connection):
+        exists = connection.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if exists is None:
+            return None
+        rows = connection.execute(
+            """
+            SELECT id, role, text, archived, status, created_at
+            FROM messages
+            WHERE session_id = ? AND role IN ('user', 'model')
+              AND (? OR archived = 0)
+            ORDER BY id
+            """,
+            (session_id, int(include_archived)),
+        ).fetchall()
+        counts = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) AS archived
+            FROM messages
+            WHERE session_id = ? AND role IN ('user', 'model')
+            """,
+            (session_id,),
+        ).fetchone()
+        context_rows = connection.execute(
+            "SELECT text FROM messages WHERE session_id = ? AND archived = 0 AND status != 'INITIALIZING'",
+            (session_id,),
+        ).fetchall()
+        return {
+            "messages": [dict(row) for row in rows],
+            "active_count": counts["active"] or 0,
+            "archived_count": counts["archived"] or 0,
+            "context_characters": sum(len(row["text"]) for row in context_rows),
+        }
+
+    return run_database_operation(database_path, read_messages)
+
+
+def list_blocked_sessions(database_path):
+    def read(connection):
+        rows = connection.execute(
+            "SELECT session_id, reason, blocked_at FROM blocked_sessions ORDER BY blocked_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    return run_database_operation(database_path, read)
+
+
+def unblock_session(database_path, session_id):
+    session_id = validate_session_id(session_id)
+
+    def remove(connection):
+        connection.execute("DELETE FROM blocked_sessions WHERE session_id = ?", (session_id,))
+        connection.execute("DELETE FROM recent_messages WHERE session_id = ?", (session_id,))
+
+    run_database_operation(database_path, remove)
+
+
+def session_exists(database_path, session_id):
+    session_id = validate_session_id(session_id)
+
+    def check(connection):
+        return connection.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone() is not None
+
+    return run_database_operation(database_path, check)
+
+
+def record_agent_turn(database_path, session_id):
+    session_id = validate_session_id(session_id)
+
+    def add(connection):
+        connection.execute(
+            "INSERT INTO agent_turns (session_id) VALUES (?)", (session_id,)
+        )
+
+    run_database_operation(database_path, add)
+
+
+def dashboard_overview(database_path, hours):
+    if hours not in (24, 168, 720):
+        raise DatabaseError("Unsupported period.")
+    cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=hours)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    bucket = "%Y-%m-%d %H:00" if hours == 24 else "%Y-%m-%d"
+
+    def read(connection):
+        calls = connection.execute(
+            """
+            SELECT session_id, model, prompt_tokens, completion_tokens, cost_usd, created_at
+            FROM api_calls WHERE created_at >= ?
+            """,
+            (cutoff,),
+        ).fetchall()
+        messages = connection.execute(
+            "SELECT session_id, created_at FROM messages WHERE role = 'user' AND created_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        turns = connection.execute(
+            "SELECT session_id, created_at FROM agent_turns WHERE created_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        totals = dict(input=0, output=0, customer_messages=len(messages),
+                      agent_turns=len(turns), llm_api_calls=len(calls), openrouter_api_calls=0)
+        openrouter = dict(input=0, output=0, calls=0, cost_usd=0.0, priced_calls=0)
+        series = {}
+        ranking = {}
+
+        def point(timestamp):
+            key = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").strftime(bucket)
+            return series.setdefault(key, dict(period=key, input=0, output=0,
+                                               customer_messages=0, agent_turns=0,
+                                               llm_api_calls=0))
+
+        def rank(session_id):
+            return ranking.setdefault(session_id, dict(session_id=session_id,
+                                                     tokens=0, messages=0, agent_turns=0))
+
+        for row in calls:
+            prompt = row["prompt_tokens"] or 0
+            completion = row["completion_tokens"] or 0
+            totals["input"] += prompt
+            totals["output"] += completion
+            point(row["created_at"])["input"] += prompt
+            point(row["created_at"])["output"] += completion
+            point(row["created_at"])["llm_api_calls"] += 1
+            if row["session_id"] != "admin:report":
+                rank(row["session_id"])["tokens"] += prompt + completion
+            if row["model"].startswith("openrouter:"):
+                openrouter["input"] += prompt
+                openrouter["output"] += completion
+                openrouter["calls"] += 1
+                if row["cost_usd"] is not None:
+                    openrouter["cost_usd"] += row["cost_usd"]
+                    openrouter["priced_calls"] += 1
+                totals["openrouter_api_calls"] += 1
+        for row in messages:
+            point(row["created_at"])["customer_messages"] += 1
+            rank(row["session_id"])["messages"] += 1
+        for row in turns:
+            point(row["created_at"])["agent_turns"] += 1
+            rank(row["session_id"])["agent_turns"] += 1
+        totals["total"] = totals["input"] + totals["output"]
+        openrouter["total"] = openrouter["input"] + openrouter["output"]
+        return dict(totals=totals, openrouter=openrouter,
+                    series=[series[key] for key in sorted(series)],
+                    top_sessions=sorted(ranking.values(), key=lambda item: item["tokens"],
+                                        reverse=True)[:50])
+
+    return run_database_operation(database_path, read)
 
 
 def insert_incoming_message(database_path, session_id, text):
@@ -527,6 +730,7 @@ def record_api_call(
     duration_ms=None,
     status="ok",
     error=None,
+    cost_usd=None,
 ):
     session_id = validate_session_id(session_id)
     if not isinstance(model, str) or not model.strip():
@@ -537,6 +741,13 @@ def record_api_call(
         isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float))
     ):
         raise DatabaseError("Duration must be a number.")
+    if cost_usd is not None and (
+        isinstance(cost_usd, bool)
+        or not isinstance(cost_usd, (int, float))
+        or not math.isfinite(cost_usd)
+        or cost_usd < 0
+    ):
+        raise DatabaseError("Cost must be a non-negative finite number.")
 
     def add_call(connection):
         cursor = connection.execute(
@@ -550,9 +761,10 @@ def record_api_call(
                 completion_tokens,
                 duration_ms,
                 status,
-                error
+                error,
+                cost_usd
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -564,6 +776,7 @@ def record_api_call(
                 int(duration_ms) if duration_ms is not None else None,
                 status,
                 error,
+                cost_usd,
             ),
         )
         return cursor.lastrowid

@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -6,6 +7,7 @@ from urllib.parse import urlparse
 
 from agent_reply import AgentReply
 from app_config import (
+    get_list_context_token_limit,
     get_list_mode_enabled,
     get_max_api_calls_per_reply,
     get_max_search_rounds,
@@ -184,6 +186,7 @@ def get_agent_reply(
     if final_system_instruction is None:
         final_system_instruction = load_final_system_instruction()
     max_search_rounds = get_max_search_rounds()
+    budget = {"used": 0, "limit": get_max_api_calls_per_reply(), "list_mode": False}
     call_decision = _build_model_call(
         generate_fn,
         usage_fn,
@@ -193,6 +196,7 @@ def get_agent_reply(
         "decision",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
     call_selection = _build_model_call(
         generate_fn,
@@ -203,6 +207,7 @@ def get_agent_reply(
         "selection",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
     call_final = _build_model_call(
         generate_fn,
@@ -213,8 +218,8 @@ def get_agent_reply(
         "final",
         tpm_limit,
         record_model_prefix,
+        budget,
     )
-    budget = {"used": 0, "limit": get_max_api_calls_per_reply()}
     list_addenda = load_list_mode_addenda()
 
     product_urls = _extract_product_urls(user_text)
@@ -264,6 +269,7 @@ def get_agent_reply(
         return reply
 
     total = reply.count
+    budget["list_mode"] = True
     _log_step(session_id, "LIST_START", f"total={total}")
     _notify_list_start(list_start_notify_fn)
     item_notes = []
@@ -542,13 +548,20 @@ def _build_model_call(
     purpose,
     tpm_limit,
     record_model_prefix,
+    budget,
 ):
     if database_path is None:
         return generate_fn
 
     def call_model(history, model_name, api_key, system_instruction, **kwargs):
         estimated_tokens = _estimate_tokens(history, system_instruction)
-        wait_for_token_budget(database_path, estimated_tokens, tpm_limit=tpm_limit)
+        context_limit = get_list_context_token_limit() if budget["list_mode"] else None
+        wait_for_token_budget(
+            database_path,
+            estimated_tokens,
+            tpm_limit=tpm_limit,
+            context_limit=context_limit,
+        )
 
         started_at = time.monotonic()
         try:
@@ -586,6 +599,7 @@ def _build_model_call(
             None,
             prompt_tokens=usage["prompt_tokens"],
             completion_tokens=usage["completion_tokens"],
+            cost_usd=usage["cost_usd"],
         )
         guard_session_consumption(database_path, session_id)
         return data
@@ -604,6 +618,7 @@ def _record_model_call(
     error,
     prompt_tokens=0,
     completion_tokens=0,
+    cost_usd=None,
 ):
     try:
         record_api_call(
@@ -614,6 +629,7 @@ def _record_model_call(
             model_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
             duration_ms=duration_ms,
             status=status,
             error=error,
@@ -627,24 +643,35 @@ def _record_model_call(
 
 
 def _read_usage(usage_fn, data):
+    metadata = data.get("usageMetadata") if isinstance(data, dict) else None
+    cost_usd = _safe_cost(metadata.get("costUsd")) if isinstance(metadata, dict) else None
     if usage_fn is None:
         usage_fn = get_usage_metadata
     try:
         usage = usage_fn(data)
     except Exception:
-        return {"prompt_tokens": 0, "completion_tokens": 0}
+        return {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": cost_usd}
     if not isinstance(usage, dict):
-        return {"prompt_tokens": 0, "completion_tokens": 0}
+        return {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": cost_usd}
 
     return {
         "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
         "completion_tokens": _safe_int(usage.get("completion_tokens")),
+        "cost_usd": cost_usd,
     }
 
 
 def _safe_int(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
+    return value
+
+
+def _safe_cost(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
     return value
 
 

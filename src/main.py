@@ -40,7 +40,7 @@ def get_settings():
 def main():
     load_env_file()
     configure_logging(LOG_PATH, CONVERSATION_LOG_PATH)
-    api_key, model = get_settings()
+    api_key, _model = get_settings()
     session_id = "terminal:default"
 
     try:
@@ -114,7 +114,7 @@ def main():
                 DATABASE_PATH,
                 session_id,
                 user_text,
-                model,
+                get_gemini_model(),
                 api_key,
                 system_instruction,
                 selection_instruction,

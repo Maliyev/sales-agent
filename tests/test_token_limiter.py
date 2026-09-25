@@ -192,6 +192,19 @@ class WaitForTokenBudgetTests(unittest.TestCase):
 
         self.assertEqual(self.sleeps, [])
 
+    def test_list_context_can_use_a_higher_limit(self):
+        set_config(build_config(tpm_limit=0, context_token_limit=8000))
+
+        wait_for_token_budget(
+            self.database_path,
+            8148,
+            tpm_limit=0,
+            context_limit=10000,
+        )
+
+        with self.assertRaises(SessionContextTooLargeError):
+            wait_for_token_budget(self.database_path, 8148, tpm_limit=0)
+
     def test_the_session_context_limit_is_checked_before_the_tpm_limit(self):
         set_config(build_config(tpm_limit=1000, context_token_limit=500))
 

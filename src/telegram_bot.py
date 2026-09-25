@@ -15,6 +15,7 @@ from database import (
     DatabaseError,
     initialize_database,
     insert_incoming_message,
+    record_agent_turn,
     reset_history,
     save_model_message,
     update_messages_status,
@@ -488,7 +489,7 @@ def build_telegram_channel(
             database_path,
             session_id,
             user_text,
-            model,
+            get_gemini_model(),
             api_key,
             system_instruction,
             selection_instruction,
@@ -516,6 +517,7 @@ def build_telegram_channel(
             create_reply,
             save_reply,
             mark_messages_status=mark_messages_status,
+            record_turn=lambda session_id: record_agent_turn(database_path, session_id),
             max_workers=max_workers,
         )
 

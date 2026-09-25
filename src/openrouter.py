@@ -1,6 +1,7 @@
 """OpenRouter chat completion adapter for the agent's Gemini-shaped messages."""
 
 import json
+import math
 
 import requests
 
@@ -22,6 +23,7 @@ def generate_content(
     tool_config=None,
     timeout=60,
     reasoning_effort="",
+    max_completion_tokens=MAX_COMPLETION_TOKENS,
 ):
     if not api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is missing.")
@@ -32,7 +34,7 @@ def generate_content(
     token_limit_field = (
         "max_completion_tokens" if model.startswith("openai/") else "max_tokens"
     )
-    payload[token_limit_field] = MAX_COMPLETION_TOKENS
+    payload[token_limit_field] = max_completion_tokens
     if reasoning_effort:
         payload["reasoning"] = {"effort": reasoning_effort}
     if tools is not None:
@@ -216,11 +218,20 @@ def _to_gemini_response(data):
         if not parts:
             raise ValueError("The model returned no text or tool call.")
         usage = data.get("usage") or {}
+        cost = usage.get("cost")
+        if (
+            isinstance(cost, bool)
+            or not isinstance(cost, (int, float))
+            or not math.isfinite(cost)
+            or cost < 0
+        ):
+            cost = None
         return {
             "candidates": [{"content": {"parts": parts}}],
             "usageMetadata": {
                 "promptTokenCount": usage.get("prompt_tokens", 0),
                 "candidatesTokenCount": usage.get("completion_tokens", 0),
+                "costUsd": cost,
             },
         }
     except (KeyError, IndexError, TypeError, ValueError) as error:

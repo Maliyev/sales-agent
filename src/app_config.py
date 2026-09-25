@@ -1,6 +1,9 @@
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
+from threading import Lock
 
 from app_logging import get_logger
 
@@ -48,11 +51,17 @@ DEFAULT_CONFIG = {
             "auto_compaction": False,
             "compaction_model": "",
             "context_token_limit": 0,
+            "list_context_token_limit": 10000,
         },
     },
 }
 
 _cached_config = None
+_cached_stamp = None
+_no_rejected_stamp = object()
+_rejected_stamp = _no_rejected_stamp
+_config_override = None
+_config_lock = Lock()
 
 
 class ConfigError(RuntimeError):
@@ -78,21 +87,113 @@ def load_config(path=None):
     if not isinstance(raw, dict):
         raise ConfigError("Config file must contain a JSON object.")
 
-    _merge_into(config, raw)
-    _validate_config(config)
+    try:
+        _merge_into(config, raw)
+        _validate_config(config)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ConfigError(f"Config file has an invalid structure: {error}") from error
     return config
 
 
 def get_config():
-    global _cached_config
-    if _cached_config is None:
-        _cached_config = load_config()
-    return _cached_config
+    global _cached_config, _cached_stamp, _rejected_stamp
+    with _config_lock:
+        if _config_override is not None:
+            return _config_override
+
+        try:
+            stat = CONFIG_PATH.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            stamp = None
+        except OSError as error:
+            if _cached_config is None:
+                raise ConfigError(f"Cannot read config file: {error}") from error
+            logger.warning("Could not check config file; keeping previous settings: %s", error)
+            return _cached_config
+
+        if _cached_config is None or (stamp != _cached_stamp and stamp != _rejected_stamp):
+            try:
+                updated = load_config()
+            except ConfigError as error:
+                if _cached_config is None:
+                    raise
+                _rejected_stamp = stamp
+                logger.warning("Invalid config file; keeping previous settings: %s", error)
+            else:
+                if _cached_config is not None:
+                    logger.info("Config file changed; new settings applied")
+                _cached_config = updated
+                _cached_stamp = stamp
+                _rejected_stamp = _no_rejected_stamp
+
+        return _cached_config
 
 
 def set_config(config):
-    global _cached_config
-    _cached_config = config
+    global _cached_config, _cached_stamp, _rejected_stamp, _config_override
+    with _config_lock:
+        _config_override = config
+        if config is None:
+            _cached_config = None
+            _cached_stamp = None
+            _rejected_stamp = _no_rejected_stamp
+
+
+def editable_config():
+    """Return only known, non-secret configuration keys."""
+    return _known_keys(get_config(), DEFAULT_CONFIG)
+
+
+def save_config(config):
+    """Validate and atomically replace the file read by the running agent."""
+    global _cached_config, _cached_stamp, _rejected_stamp
+    if not isinstance(config, dict) or not _same_keys(config, DEFAULT_CONFIG):
+        raise ConfigError("Configuration has missing or unknown fields.")
+    candidate = _deep_copy(config)
+    try:
+        _validate_config(candidate)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ConfigError(f"Configuration has an invalid structure: {error}") from error
+    temporary = None
+    with _config_lock:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=CONFIG_PATH.parent,
+                prefix=".config-", suffix=".json", delete=False,
+            ) as file:
+                temporary = Path(file.name)
+                json.dump(candidate, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, CONFIG_PATH)
+            stat = CONFIG_PATH.stat()
+        except OSError as error:
+            logger.error("Could not save config file: %s", error)
+            raise ConfigError("Could not save config file.") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        _cached_config = candidate
+        _cached_stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        _rejected_stamp = _no_rejected_stamp
+    logger.info("Config saved from admin dashboard")
+    return _deep_copy(candidate)
+
+
+def _known_keys(source, shape):
+    return {
+        key: _known_keys(source[key], value) if isinstance(value, dict) else _deep_copy(source[key])
+        for key, value in shape.items()
+    }
+
+
+def _same_keys(value, shape):
+    return isinstance(value, dict) and value.keys() == shape.keys() and all(
+        _same_keys(value[key], item) if isinstance(item, dict) else True
+        for key, item in shape.items()
+    )
 
 
 def get_gemini_model():
@@ -150,6 +251,11 @@ def get_compaction_model():
 
 def get_context_token_limit():
     return get_config()["limits"]["context_overflow"].get("context_token_limit", 0)
+
+
+def get_list_context_token_limit():
+    context = get_config()["limits"].get("context_overflow", {})
+    return context.get("list_context_token_limit", context.get("context_token_limit", 0))
 
 
 def get_max_search_rounds():
@@ -305,6 +411,10 @@ def _validate_config(config):
     _validate_non_negative_int(
         context_overflow.get("context_token_limit"),
         "limits.context_overflow.context_token_limit",
+    )
+    _validate_non_negative_int(
+        context_overflow.get("list_context_token_limit"),
+        "limits.context_overflow.list_context_token_limit",
     )
 
 
