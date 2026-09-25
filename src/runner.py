@@ -69,7 +69,7 @@ def main():
             DATABASE_PATH,
             session_id,
             user_text,
-            model,
+            get_gemini_model(),
             api_key,
             system_instruction,
             selection_instruction,

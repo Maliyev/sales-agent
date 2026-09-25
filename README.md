@@ -453,8 +453,16 @@ root (secrets stay in `.env`). Complete reference:
   disables it (compaction then only triggers when the request cannot fit
   `gemini.tpm_limit` at all).
 
-A missing, invalid, or incomplete `config.json` falls back to safe defaults
-(invalid values abort the startup with a clear error). Token usage comes from
+A running bot checks whether `config.json` changed whenever it reads a setting.
+Changes apply to the next message or model call without restarting the process.
+If an edit briefly leaves the file invalid, the bot keeps its last valid
+settings and logs a warning; an invalid file at startup still stops startup.
+The dashboard should replace the file atomically when saving it.
+Changing the local file does not change the copy in a running Railway container.
+The future dashboard must write to the running service's file, and persistent
+storage will be needed for changes to survive a redeploy.
+
+A missing `config.json` uses safe defaults. Token usage comes from
 the provider response (`usageMetadata` for Gemini). The pre-request estimate
 uses the same conservative characters-per-token heuristic as the history size
 check.

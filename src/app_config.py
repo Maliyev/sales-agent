@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from threading import Lock
 
 from app_logging import get_logger
 
@@ -53,6 +54,11 @@ DEFAULT_CONFIG = {
 }
 
 _cached_config = None
+_cached_stamp = None
+_no_rejected_stamp = object()
+_rejected_stamp = _no_rejected_stamp
+_config_override = None
+_config_lock = Lock()
 
 
 class ConfigError(RuntimeError):
@@ -78,21 +84,57 @@ def load_config(path=None):
     if not isinstance(raw, dict):
         raise ConfigError("Config file must contain a JSON object.")
 
-    _merge_into(config, raw)
-    _validate_config(config)
+    try:
+        _merge_into(config, raw)
+        _validate_config(config)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ConfigError(f"Config file has an invalid structure: {error}") from error
     return config
 
 
 def get_config():
-    global _cached_config
-    if _cached_config is None:
-        _cached_config = load_config()
-    return _cached_config
+    global _cached_config, _cached_stamp, _rejected_stamp
+    with _config_lock:
+        if _config_override is not None:
+            return _config_override
+
+        try:
+            stat = CONFIG_PATH.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            stamp = None
+        except OSError as error:
+            if _cached_config is None:
+                raise ConfigError(f"Cannot read config file: {error}") from error
+            logger.warning("Could not check config file; keeping previous settings: %s", error)
+            return _cached_config
+
+        if _cached_config is None or (stamp != _cached_stamp and stamp != _rejected_stamp):
+            try:
+                updated = load_config()
+            except ConfigError as error:
+                if _cached_config is None:
+                    raise
+                _rejected_stamp = stamp
+                logger.warning("Invalid config file; keeping previous settings: %s", error)
+            else:
+                if _cached_config is not None:
+                    logger.info("Config file changed; new settings applied")
+                _cached_config = updated
+                _cached_stamp = stamp
+                _rejected_stamp = _no_rejected_stamp
+
+        return _cached_config
 
 
 def set_config(config):
-    global _cached_config
-    _cached_config = config
+    global _cached_config, _cached_stamp, _rejected_stamp, _config_override
+    with _config_lock:
+        _config_override = config
+        if config is None:
+            _cached_config = None
+            _cached_stamp = None
+            _rejected_stamp = _no_rejected_stamp
 
 
 def get_gemini_model():

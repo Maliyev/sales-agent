@@ -488,7 +488,7 @@ def build_telegram_channel(
             database_path,
             session_id,
             user_text,
-            model,
+            get_gemini_model(),
             api_key,
             system_instruction,
             selection_instruction,
