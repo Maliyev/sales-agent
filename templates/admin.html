@@ -1,10 +1,14 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("elen-admin-theme") === "dark" ? "dark" : "light"; } catch (_) {}</script>
   <title>ELEN AI Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('admin.static', filename='admin.css') }}">
   <script src="{{ url_for('admin.static', filename='admin.js') }}" defer></script>
 </head>
@@ -13,12 +17,18 @@
     <aside class="nav">
       <div class="brand"><span class="brand-icon">E</span><span><strong>ELEN AI</strong><small>ADMIN CONTROL</small></span></div>
       <nav aria-label="Разделы">
-        <button class="nav-item active" data-view="overview">▦ <span>Overview</span></button>
-        <button class="nav-item" data-view="chats">◉ <span>Chats</span></button>
-        <button class="nav-item" data-view="logs">≡ <span>Logs</span></button>
-        <button class="nav-item" data-view="sessions">⊞ <span>Sessions</span></button>
-        <button class="nav-item" data-view="settings">⚙ <span>Settings</span></button>
+        <button class="nav-item active" data-view="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>Overview</span></button>
+        <button class="nav-item" data-view="chats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.5-3.1A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8.5 11.5h7"/></svg><span>Chats</span></button>
+        <button class="nav-item" data-view="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 5h12M8 12h12M8 19h12"/><circle cx="4" cy="5" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="19" r=".7" fill="currentColor"/></svg><span>Logs</span></button>
+        <button class="nav-item" data-view="sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 20 8v8l-8 4.5L4 16V8l8-4.5Z"/><path d="m4.5 8.2 7.5 4.3 7.5-4.3M12 12.5v7.7"/></svg><span>Sessions</span></button>
+        <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1a1.8 1.8 0 0 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .9v.2a1.8 1.8 0 0 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.9l-.1.1a1.8 1.8 0 0 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.9-3h-.2a1.8 1.8 0 0 1 0-3.6h.2a1.8 1.8 0 0 0 .9-3l-.1-.1a1.8 1.8 0 0 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3-.9v-.2a1.8 1.8 0 0 1 3.6 0v.2a1.8 1.8 0 0 0 3 .9l.1-.1a1.8 1.8 0 0 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .9 3h.2a1.8 1.8 0 0 1 0 3.6h-.2a1.8 1.8 0 0 0-.9 3Z" transform="translate(0.9 0.9) scale(.925)"/></svg><span>Settings</span></button>
       </nav>
+      <label class="theme-switch-row">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 15.1A8.5 8.5 0 0 1 8.9 3.8 8.6 8.6 0 1 0 20.2 15.1Z"/><path d="M16.5 3v3M15 4.5h3"/></svg>
+        <span id="themeLabel">Тёмная тема</span>
+        <input id="themeToggle" type="checkbox" role="switch" aria-label="Тёмная тема">
+        <span class="switch-track" aria-hidden="true"><span></span></span>
+      </label>
       <form action="{{ url_for('admin.logout') }}" method="post" class="logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit">↪ &nbsp; Выйти</button>

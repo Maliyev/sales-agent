@@ -34,10 +34,47 @@ function show(view) {
 }
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => show(button.dataset.view)));
 
+const themeToggle = $("themeToggle");
+const themeLabel = $("themeLabel");
+function applyTheme(dark, save = false) {
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  themeToggle.checked = dark;
+  themeLabel.textContent = dark ? "Светлая тема" : "Тёмная тема";
+  themeToggle.setAttribute("aria-label", `Включить ${dark ? "светлую" : "тёмную"} тему`);
+  if (save) {
+    try { localStorage.setItem("elen-admin-theme", dark ? "dark" : "light"); }
+    catch (_) { /* The selected theme still applies for this page view. */ }
+  }
+}
+applyTheme(document.documentElement.dataset.theme === "dark");
+themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked, true));
+
 function stat(label, value, hint) {
   const card = node("div", "stat"); card.append(node("span", "label", label), node("strong", "", typeof value === "string" ? value : number(value)));
   if (hint) card.append(node("span", "hint", hint));
   return card;
+}
+function tokenSummary(t) {
+  const input = Number(t.input) || 0, output = Number(t.output) || 0;
+  const total = input + output, inputShare = total ? input / total * 100 : 0;
+  const feature = node("article", "metric-total");
+  const heading = node("div", "metric-total-heading");
+  heading.append(node("span", "label", "Total tokens"), node("span", "metric-period", "за выбранный период"));
+  feature.append(heading, node("strong", "metric-total-value", number(total)));
+  const bar = node("div", "token-split");
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", `Input ${number(input)}, Output ${number(output)}, Total ${number(total)}`);
+  const inputPart = node("span", "token-split-input"), outputPart = node("span", "token-split-output");
+  inputPart.style.width = `${inputShare}%`; outputPart.style.width = `${total ? 100 - inputShare : 0}%`;
+  bar.append(inputPart, outputPart); feature.append(bar);
+  const breakdown = node("div", "token-breakdown");
+  [["Input tokens", input, "input"], ["Output tokens", output, "output"]].forEach(([label, value, kind]) => {
+    const item = node("div", `token-part ${kind}`);
+    item.append(node("span", "", label), node("strong", "", number(value)));
+    breakdown.append(item);
+  });
+  feature.append(breakdown);
+  return feature;
 }
 function drawChart(id, rows, fields) {
   const target = $(id); target.replaceChildren();
@@ -76,16 +113,17 @@ async function loadOverview() {
   try {
     const data = await api(`/overview?period=${state.period}`);
     const t = data.totals, o = data.openrouter;
-    const main = $("mainStats"); main.replaceChildren(
-      stat("Input tokens", t.input), stat("Output tokens", t.output), stat("Total tokens", t.total),
+    const support = node("div", "metric-support-grid");
+    support.append(
       stat("Customer messages", t.customer_messages), stat("Agent turns", t.agent_turns),
       stat("LLM API calls", t.llm_api_calls), stat("OpenRouter API calls", t.openrouter_api_calls));
+    const main = $("mainStats"); main.replaceChildren(tokenSummary(t), support);
     const cost = o.priced_calls ? `$${Number(o.cost_usd).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:8})}` : "—";
     $("openrouterStats").replaceChildren(
       stat("Input", o.input), stat("Output", o.output), stat("Total", o.total),
       stat("Расход, USD", cost, `Цена известна для ${o.priced_calls} из ${o.calls} вызовов`));
-    drawChart("tokenChart", data.series, [{key:"input",name:"Input tokens",color:"#5ad7c1"},{key:"output",name:"Output tokens",color:"#729aff"}]);
-    drawChart("activityChart", data.series, [{key:"customer_messages",name:"Customer messages",color:"#5ad7c1"},{key:"agent_turns",name:"Agent turns",color:"#729aff"},{key:"llm_api_calls",name:"LLM API calls",color:"#eebd72"}]);
+    drawChart("tokenChart", data.series, [{key:"input",name:"Input tokens",color:"#087f72"},{key:"output",name:"Output tokens",color:"#5879ef"}]);
+    drawChart("activityChart", data.series, [{key:"customer_messages",name:"Customer messages",color:"#0a9380"},{key:"agent_turns",name:"Agent turns",color:"#5879ef"},{key:"llm_api_calls",name:"LLM API calls",color:"#d9952d"}]);
     const top = $("topSessions"); top.replaceChildren();
     if (!data.top_sessions.length) top.append(node("tr", "", ""));
     data.top_sessions.forEach(row => {
@@ -107,7 +145,9 @@ $("reportForm").addEventListener("submit", async event => {
   const days = Number($("reportDays").value);
   if (!Number.isInteger(days) || days < 1 || days > 30) return;
   const button = $("reportButton"), status = $("reportStatus");
-  button.disabled = true; status.textContent = "Анализируем журнал…";
+  const label = button.textContent;
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Готовлю отчёт…";
+  button.setAttribute("aria-busy", "true"); status.textContent = "Анализируем журнал…";
   try {
     const result = await api("/report", {method: "POST", body: JSON.stringify({days})});
     const period = `${bakuTime(result.start)} — ${bakuTime(result.end)}`;
@@ -117,7 +157,7 @@ $("reportForm").addEventListener("submit", async event => {
     $("reportResult").hidden = false;
     status.textContent = result.model_called ? "Готово" : "Нет данных за период";
   } catch (error) { status.textContent = error.message; notice(error.message, true); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy"); }
 });
 
 async function loadSessions() {
@@ -174,10 +214,13 @@ $("chatSearch").addEventListener("input", renderSessionList); $("chatFilter").ad
 $("showArchived").addEventListener("change", event => { state.archived = event.target.checked; state.messageSignature = ""; loadMessages(true); });
 $("chatComposer").addEventListener("submit", async event => {
   event.preventDefault(); const text = $("chatInput").value.trim(); if (!state.selected || !text) return;
-  $("chatSend").disabled = true;
+  const button = $("chatSend"), label = button.textContent;
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Отправляю…"; button.setAttribute("aria-busy", "true");
   try { await api(`/sessions/${encodeURIComponent(state.selected)}/messages`, {method:"POST", body:JSON.stringify({text})});
     $("chatInput").value = ""; notice("Сообщение отправлено"); await loadMessages(true); await loadSessions();
-  } catch (error) { notice(error.message, true); } finally { $("chatSend").disabled = false; }
+  } catch (error) { notice(error.message, true); } finally {
+    button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy");
+  }
 });
 $("chatInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("chatComposer").requestSubmit(); } });
 $("resetSession").addEventListener("click", async () => {
@@ -275,6 +318,7 @@ async function loadSettings() {
 }
 $("settingsForm").addEventListener("submit", async event => {
   event.preventDefault(); if (!state.config) return;
+  const button = event.currentTarget.querySelector("button[type=submit]"), label = button.textContent;
   const config = structuredClone(state.config);
   document.querySelectorAll("[data-path]").forEach(input => {
     const path = input.dataset.path.split("."); let parent = config;
@@ -288,9 +332,11 @@ $("settingsForm").addEventListener("submit", async event => {
     parent[path.at(-1)] = value;
   });
   const status = $("settingsState"); status.textContent = "Сохранение…";
+  button.disabled = true; button.classList.add("is-loading"); button.textContent = "Сохраняю…"; button.setAttribute("aria-busy", "true");
   try { const data = await api("/settings", {method:"PUT", body:JSON.stringify({config})});
     state.config = data.config; renderSettings(); status.textContent = "Сохранено · новые запросы используют эти настройки"; notice("Настройки сохранены");
   } catch (error) { status.textContent = error.message; notice(error.message, true); }
+  finally { button.disabled = false; button.classList.remove("is-loading"); button.textContent = label; button.removeAttribute("aria-busy"); }
 });
 
 show(["overview","chats","logs","sessions","settings"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview");
