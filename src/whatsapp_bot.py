@@ -497,6 +497,7 @@ def build_whatsapp_channel(
 
     return SimpleNamespace(
         name="whatsapp",
+        notify_list_processing=notify_list_processing,
         app=app,
         run=run,
         start=start,

@@ -620,6 +620,7 @@ def build_telegram_channel(
 
     return SimpleNamespace(
         name="telegram",
+        notify_list_processing=notify_list_processing,
         run=run,
         start=start,
         stop=stop,
