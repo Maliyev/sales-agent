@@ -2,13 +2,15 @@ import os
 from pathlib import Path
 import threading
 
-from admin_dashboard import build_admin_channel
+from admin_dashboard import register_admin_routes
 from app_config import get_gemini_model
 from app_logging import configure_logging, get_logger
 from config import load_env_file
 from database import (
     DatabaseError,
     initialize_database,
+    record_agent_turn,
+    reset_history,
     save_model_message,
     update_messages_status,
 )
@@ -92,6 +94,7 @@ def main():
         create_reply,
         save_reply,
         mark_messages_status=mark_messages_status,
+        record_turn=lambda session_id: record_agent_turn(DATABASE_PATH, session_id),
         max_workers=MAX_WORKERS,
     )
 
@@ -127,17 +130,22 @@ def main():
         port=whatsapp_port,
     )
 
-    admin_channel = build_admin_channel(DATABASE_PATH)
+    register_admin_routes(
+        whatsapp_channel.app,
+        DATABASE_PATH,
+        coordinator=coordinator,
+        reset_fn=lambda session_id: reset_history(DATABASE_PATH, session_id),
+        system_instruction=system_instruction,
+    )
 
     telegram_channel.start()
     whatsapp_channel.start()
-    admin_channel.start()
 
     logger.info(
         "🚀 Runner started | workers=%d telegram=on "
-        "whatsapp_url=http://127.0.0.1:8000/webhooks/whatsapp "
-        "admin_url=http://127.0.0.1:8001",
+        "port=%d whatsapp_path=/webhooks/whatsapp admin_path=/admin",
         MAX_WORKERS,
+        whatsapp_port,
     )
     print("Sales agent runner is running. Press Ctrl+C to stop.")
 

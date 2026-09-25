@@ -1,40 +1,47 @@
 {
   "gemini": {
     "model": "gemini-3.1-flash-lite",
-    "tpm_limit": 230000,
-    "thinking_level": "high",
     "retry": {
-      "delays": [15, 30, 60, 120, 240],
+      "delays": [
+        15,
+        30,
+        60,
+        120,
+        240
+      ],
       "max_wait_seconds": 600
+    },
+    "thinking_level": "high",
+    "tpm_limit": 230000,
+    "vision_model": ""
+  },
+  "limits": {
+    "context_overflow": {
+      "auto_compaction": true,
+      "auto_reset": true,
+      "compaction_model": "gemini-3.1-flash-lite",
+      "context_token_limit": 8000
+    },
+    "list_mode_enabled": true,
+    "max_api_calls_per_reply": 70,
+    "max_search_rounds": 3,
+    "message_rate": {
+      "max_messages": 15,
+      "window_seconds": 60
+    },
+    "token_abuse": {
+      "limit": 200000,
+      "window_seconds": 60
     }
   },
   "openrouter": {
-    "enabled": true,
-    "model": "z-ai/glm-5.3-flash",
-    "reasoning_effort": "high",
     "allowed_numbers": [
       "+994703557772",
       "+994556264626",
       "+994776264626"
-    ]
-  },
-  "limits": {
-    "max_search_rounds": 3,
-    "max_api_calls_per_reply": 70,
-    "list_mode_enabled": true,
-    "message_rate": { 
-      "max_messages": 15,
-      "window_seconds": 60
-    },
-    "token_abuse": { 
-      "limit": 200000,
-      "window_seconds": 60
-    },
-    "context_overflow": {
-      "auto_reset": true,
-      "auto_compaction": true,
-      "compaction_model": "gemini-3.1-flash-lite",
-      "context_token_limit": 8000
-    }
+    ],
+    "enabled": true,
+    "model": "z-ai/glm-5.3-flash",
+    "reasoning_effort": "low"
   }
 }

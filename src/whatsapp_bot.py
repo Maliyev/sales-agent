@@ -13,6 +13,7 @@ from database import (
     DatabaseError,
     initialize_database,
     insert_incoming_message,
+    record_agent_turn,
     reset_history,
     save_model_message,
     update_messages_status,
@@ -364,6 +365,7 @@ def build_whatsapp_channel(
             create_reply,
             save_reply,
             mark_messages_status=mark_messages_status,
+            record_turn=lambda session_id: record_agent_turn(database_path, session_id),
             max_workers=max_workers,
         )
 
@@ -495,6 +497,7 @@ def build_whatsapp_channel(
 
     return SimpleNamespace(
         name="whatsapp",
+        app=app,
         run=run,
         start=start,
         stop=stop,

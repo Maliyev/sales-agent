@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from threading import Lock
 
@@ -135,6 +137,62 @@ def set_config(config):
             _cached_config = None
             _cached_stamp = None
             _rejected_stamp = _no_rejected_stamp
+
+
+def editable_config():
+    """Return only known, non-secret configuration keys."""
+    return _known_keys(get_config(), DEFAULT_CONFIG)
+
+
+def save_config(config):
+    """Validate and atomically replace the file read by the running agent."""
+    global _cached_config, _cached_stamp, _rejected_stamp
+    if not isinstance(config, dict) or not _same_keys(config, DEFAULT_CONFIG):
+        raise ConfigError("Configuration has missing or unknown fields.")
+    candidate = _deep_copy(config)
+    try:
+        _validate_config(candidate)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ConfigError(f"Configuration has an invalid structure: {error}") from error
+    temporary = None
+    with _config_lock:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=CONFIG_PATH.parent,
+                prefix=".config-", suffix=".json", delete=False,
+            ) as file:
+                temporary = Path(file.name)
+                json.dump(candidate, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, CONFIG_PATH)
+            stat = CONFIG_PATH.stat()
+        except OSError as error:
+            logger.error("Could not save config file: %s", error)
+            raise ConfigError("Could not save config file.") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        _cached_config = candidate
+        _cached_stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        _rejected_stamp = _no_rejected_stamp
+    logger.info("Config saved from admin dashboard")
+    return _deep_copy(candidate)
+
+
+def _known_keys(source, shape):
+    return {
+        key: _known_keys(source[key], value) if isinstance(value, dict) else _deep_copy(source[key])
+        for key, value in shape.items()
+    }
+
+
+def _same_keys(value, shape):
+    return isinstance(value, dict) and value.keys() == shape.keys() and all(
+        _same_keys(value[key], item) if isinstance(item, dict) else True
+        for key, item in shape.items()
+    )
 
 
 def get_gemini_model():

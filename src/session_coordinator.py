@@ -34,6 +34,7 @@ class SessionCoordinator:
         max_workers=4,
         debounce_seconds=1.0,
         sleep_fn=time.sleep,
+        record_turn=None,
     ):
         if isinstance(max_workers, bool) or not isinstance(max_workers, int):
             raise ValueError("max_workers must be a positive number.")
@@ -47,6 +48,7 @@ class SessionCoordinator:
         self.generate_reply = generate_reply
         self.save_reply = save_reply
         self.mark_messages_status = mark_messages_status
+        self.record_turn = record_turn
         self.debounce_seconds = debounce_seconds
         self.sleep_fn = sleep_fn
         self.states = {}
@@ -151,6 +153,11 @@ class SessionCoordinator:
                         len(pending),
                         len(combined_text),
                     )
+                    if self.record_turn is not None:
+                        try:
+                            self.record_turn(session_id)
+                        except Exception:
+                            logger.exception("Could not record agent turn | session=%s", session_id)
                     reply = self.generate_reply(
                         session_id,
                         combined_text,

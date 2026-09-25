@@ -22,6 +22,7 @@ def generate_content(
     tool_config=None,
     timeout=60,
     reasoning_effort="",
+    max_completion_tokens=MAX_COMPLETION_TOKENS,
 ):
     if not api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is missing.")
@@ -32,7 +33,7 @@ def generate_content(
     token_limit_field = (
         "max_completion_tokens" if model.startswith("openai/") else "max_tokens"
     )
-    payload[token_limit_field] = MAX_COMPLETION_TOKENS
+    payload[token_limit_field] = max_completion_tokens
     if reasoning_effort:
         payload["reasoning"] = {"effort": reasoning_effort}
     if tools is not None:

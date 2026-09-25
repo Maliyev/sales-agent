@@ -250,9 +250,10 @@ admin dashboard in one process with one shared session coordinator
 (six parallel workers). All channels write to the same two log files.
 Stop it with Ctrl+C.
 
-The standalone entry points (`telegram_bot.py`, `whatsapp_bot.py`,
-`admin_dashboard.py`, `main.py`) keep working for running one channel alone,
-but do not combine them with the runner for the same channel.
+The standalone entry points (`telegram_bot.py`, `whatsapp_bot.py`, `main.py`)
+keep working for running one channel alone. The admin dashboard is served only
+by the combined runner. Do not combine a standalone channel with the runner
+for the same channel.
 
 ## Application logs
 
@@ -457,10 +458,10 @@ A running bot checks whether `config.json` changed whenever it reads a setting.
 Changes apply to the next message or model call without restarting the process.
 If an edit briefly leaves the file invalid, the bot keeps its last valid
 settings and logs a warning; an invalid file at startup still stops startup.
-The dashboard should replace the file atomically when saving it.
+The dashboard replaces the file atomically when saving it.
 Changing the local file does not change the copy in a running Railway container.
-The future dashboard must write to the running service's file, and persistent
-storage will be needed for changes to survive a redeploy.
+Dashboard edits write to the running service's file. They take effect on new
+work, but a Railway redeploy replaces them with the repository version.
 
 A missing `config.json` uses safe defaults. Token usage comes from
 the provider response (`usageMetadata` for Gemini). The pre-request estimate
@@ -470,21 +471,31 @@ check.
 The previous pre-migration file is kept untouched as
 `data/sales_agent_legacy.db`; the program no longer reads it.
 
-## Local chat dashboard
+## Admin dashboard
 
-Run the local operator dashboard in a separate PowerShell window:
+Set `ADMIN_PASSWORD` and a random `ADMIN_SESSION_SECRET` of at least 32
+characters in `.env` locally, and as environment variables in Railway. Both
+are required before starting `src/runner.py`. Never put real values in Git.
 
-```powershell
-python src/admin_dashboard.py
-```
+The runner serves `/admin` on the same Flask server and port as
+`/webhooks/whatsapp` (`http://127.0.0.1:8000/admin` locally). Login protects
+the UI and API. Overview reads usage and activity from SQLite; Chats supports
+manual replies and context reset; Logs reads `conversations.log`; Sessions
+manages blocked sessions; Settings validates and atomically edits `config.json`.
+The admin session cookie is HttpOnly and SameSite; on Railway it is also Secure.
+Agent turns are recorded separately from customer messages and API calls.
 
-Or use the combined runner, which also serves the dashboard at the same
-address in the same process (see "Run everything with one command").
-
-Open `http://127.0.0.1:8001`. The page lists the current SQLite sessions,
-refreshes the selected conversation automatically, and can send a manual reply
-to WhatsApp or Telegram sessions through the existing channel clients. It binds
-only to localhost and is not exposed through the WhatsApp Cloudflare tunnel.
+Overview can generate an on-demand developer report from `conversations.log`
+and its retained rotated files. The default is one Baku calendar day: before
+05:00 it starts at midnight yesterday, otherwise at midnight today. Larger
+values include more whole calendar days before that start. A report uses
+`z-ai/glm-5.3-flash` through OpenRouter with low reasoning and the prompt in
+`prompts/admin_report.md`. It runs only after pressing the button. If the
+selected logs exceed 1 million characters, the request is rejected before
+calling OpenRouter; no lines are silently omitted. Older logs may have been
+removed by rotation or a redeploy, so the UI shows the available coverage.
+Report API usage is included in Overview totals but excluded from customer
+session rankings.
 
 The full search result and the temporary selection response are not added to
 the conversation history or SQLite. The final request contains only the chosen
